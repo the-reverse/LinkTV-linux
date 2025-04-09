@@ -14,6 +14,10 @@ struct vm_area_struct;
 /* Zone modifiers in GFP_ZONEMASK (see linux/mmzone.h - low two bits) */
 #define __GFP_DMA	0x01
 #define __GFP_HIGHMEM	0x02
+#define __GFP_DVR	0x03
+#ifdef CONFIG_REALTEK_TEXT_DEBUG
+#define __GFP_TEXT	0x04
+#endif
 
 /*
  * Action modifiers - doesn't change the zoning
@@ -39,6 +43,8 @@ struct vm_area_struct;
 #define __GFP_COMP	0x4000u	/* Add compound page metadata */
 #define __GFP_ZERO	0x8000u	/* Return zeroed page on success */
 #define __GFP_NOMEMALLOC 0x10000u /* Don't use emergency reserves */
+#define __GFP_EXHAUST	0x20000u  /* Exhaust all zone memory */
+#define __GFP_HUGEFREE	0x40000u  /* Free a chunk of memory when needed */
 
 #define __GFP_BITS_SHIFT 20	/* Room for 20 __GFP_FOO bits */
 #define __GFP_BITS_MASK ((1 << __GFP_BITS_SHIFT) - 1)
@@ -55,6 +61,10 @@ struct vm_area_struct;
 #define GFP_KERNEL	(__GFP_WAIT | __GFP_IO | __GFP_FS)
 #define GFP_USER	(__GFP_WAIT | __GFP_IO | __GFP_FS)
 #define GFP_HIGHUSER	(__GFP_WAIT | __GFP_IO | __GFP_FS | __GFP_HIGHMEM)
+#define GFP_DVRUSER	(__GFP_WAIT | __GFP_IO | __GFP_FS | __GFP_DVR)
+#ifdef CONFIG_REALTEK_TEXT_DEBUG
+#define GFP_TEXTUSER	(__GFP_WAIT | __GFP_IO | __GFP_FS | __GFP_TEXT)
+#endif
 
 /* Flag - indicates that the buffer will be suitable for DMA.  Ignored on some
    platforms, used as appropriate on others */
@@ -81,6 +91,10 @@ struct vm_area_struct;
 static inline void arch_free_page(struct page *page, int order) { }
 #endif
 
+/* disable pli_zonelist...
+extern struct zonelist pli_zonelist;
+*/
+
 extern struct page *
 FASTCALL(__alloc_pages(unsigned int, unsigned int, struct zonelist *));
 
@@ -90,8 +104,13 @@ static inline struct page *alloc_pages_node(int nid, unsigned int __nocast gfp_m
 	if (unlikely(order >= MAX_ORDER))
 		return NULL;
 
-	return __alloc_pages(gfp_mask, order,
-		NODE_DATA(nid)->node_zonelists + (gfp_mask & GFP_ZONEMASK));
+/* disable pli_zonelist...
+	if (gfp_mask & __GFP_EXHAUST)
+		return __alloc_pages(gfp_mask, order, &pli_zonelist);
+	else
+*/
+		return __alloc_pages(gfp_mask, order,
+			NODE_DATA(nid)->node_zonelists + (gfp_mask & GFP_ZONEMASK));
 }
 
 #ifdef CONFIG_NUMA

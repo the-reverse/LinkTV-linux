@@ -27,6 +27,7 @@
 #include <linux/highmem.h>
 #include <linux/poll.h>
 #include <linux/net.h>
+#include <linux/hardirq.h>
 #include <net/checksum.h>
 
 #define HAVE_ALLOC_SKB		/* For the drivers to know */
@@ -1008,7 +1009,10 @@ extern struct sk_buff *__dev_alloc_skb(unsigned int length, int gfp_mask);
  */
 static inline struct sk_buff *dev_alloc_skb(unsigned int length)
 {
-	return __dev_alloc_skb(length, GFP_ATOMIC);
+	if (in_interrupt())
+		return __dev_alloc_skb(length, GFP_ATOMIC);
+	else
+		return __dev_alloc_skb(length, GFP_KERNEL);
 }
 
 /**
@@ -1192,7 +1196,7 @@ static inline void *skb_header_pointer(const struct sk_buff *skb, int offset,
 {
 	int hlen = skb_headlen(skb);
 
-	if (offset + len <= hlen)
+	if (hlen - offset >= len)
 		return skb->data + offset;
 
 	if (skb_copy_bits(skb, offset, buffer, len) < 0)

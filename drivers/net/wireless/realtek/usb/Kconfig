@@ -1,0 +1,38 @@
+comment "USB devices"
+	depends on NET_RADIO && INET && USB	
+	  
+config REALTEK_USB_RTL8187
+	tristate "8187 802.11g chipset support"
+	depends on NET_RADIO && INET && USB
+	select REALTEK_IEEE80211
+	---help---
+	  Say Y if you have a USB 802.11g device with Realtek RTL8187
+	  chipset.
+
+config REALTEK_USB_RTL8192
+       	tristate "8192 802.11n chipset support"
+       	depends on NET_RADIO && INET && USB
+       	---help---
+         Say Y if you have a USB 802.11n device with Realtek RTL8192
+         chipset.
+
+config REALTEK_USB_RTL8191SU
+       	tristate "8192SU/8191SU/8188SU/8712SU 802.11n chipset support"
+       	depends on NET_RADIO && INET && USB
+       	---help---
+         Say Y if you have a USB 802.11n device with Realtek RTL8192SU
+         chipset.
+
+config REALTEK_USB_RTL8192CU
+       	tristate "8192CU/8191CU/8188CU 802.11n chipset support"
+       	depends on NET_RADIO && INET && USB
+       	---help---
+         Say Y if you have a USB 802.11n device with Realtek RTL8192CU
+         chipset.
+
+config REALTEK_USB_RTL8192DU
+	tristate "8192DU dual band 802.11n chipset support"	
+       	depends on NET_RADIO && INET && USB
+	---help---
+	  Say Y if you have a USB 802.11n device with RTL8192DU
+	  chipset.	  

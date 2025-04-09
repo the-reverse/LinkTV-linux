@@ -1,0 +1,1 @@
+#undef CONFIG_I2C_VENUS_GPIO_I2C

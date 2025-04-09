@@ -34,7 +34,11 @@
 #include <linux/kbd_diacr.h>
 #include <linux/selection.h>
 
-static char vt_dont_switch;
+// cyhuang (2011/06/30) : +++
+// Mantis Bug#27187
+// Set vt_dont_switch default value = 1 , fix ALT+Fx switch VT issue.
+static char vt_dont_switch = 1;
+// cyhuang (2011/06/30) : +++
 extern struct tty_driver *console_driver;
 
 #define VT_IS_IN_USE(i)	(console_driver->ttys[i] && console_driver->ttys[i]->count)

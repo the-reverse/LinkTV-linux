@@ -32,7 +32,7 @@
  * - Ported to 2.5.7-pre1 and 2.5.7-dj2
  * - Applied patch to avoid fault in alternate header handling
  * - cleaned up find_valid_gpt
- * - On-disk structure and copy in memory is *always* LE now - 
+ * - On-disk structure and copy in memory is *always* LE now -
  *   swab fields as needed
  * - remove print_gpt_header()
  * - only use first max_p partition entries, to keep the kernel minor number
@@ -49,7 +49,7 @@
  * - moved le_efi_guid_to_cpus() back into this file.  GPT is the only
  *   thing that keeps EFI GUIDs on disk.
  * - Changed gpt structure names and members to be simpler and more Linux-like.
- * 
+ *
  * Wed Oct 17 2001 Matt Domsch <Matt_Domsch@dell.com>
  * - Removed CONFIG_DEVFS_VOLUMES_UUID code entirely per Martin Wilck
  *
@@ -74,7 +74,7 @@
  *
  * Wed Jun  6 2001 Martin Wilck <Martin.Wilck@Fujitsu-Siemens.com>
  * - added devfs volume UUID support (/dev/volumes/uuids) for
- *   mounting file systems by the partition GUID. 
+ *   mounting file systems by the partition GUID.
  *
  * Tue Dec  5 2000 Matt Domsch <Matt_Domsch@dell.com>
  * - Moved crc32() to linux/lib, added efi_crc32().
@@ -123,7 +123,7 @@ __setup("gpt", force_gpt_fn);
  * @len - length of buf
  *
  * Description: Returns EFI-style CRC32 value for @buf
- * 
+ *
  * This function uses the little endian Ethernet polynomial
  * but seeds the function with ~0, and xor's with ~0 at the end.
  * Note, the EFI Specification, v1.02, has a reference to
@@ -138,7 +138,7 @@ efi_crc32(const void *buf, unsigned long len)
 /**
  * last_lba(): return number of last logical block of device
  * @bdev: block device
- * 
+ *
  * Description: Returns last LBA value on success, 0 on error.
  * This is stored (by sd and ide-geometry) in
  *  the part[0] entry for this disk, and is the number of
@@ -147,9 +147,27 @@ efi_crc32(const void *buf, unsigned long len)
 static u64
 last_lba(struct block_device *bdev)
 {
+	unsigned ssz = bdev_hardsect_size(bdev) / 512;
+	unsigned loop = 0;
+
 	if (!bdev || !bdev->bd_inode)
 		return 0;
-	return (bdev->bd_inode->i_size >> 9) - 1ULL;
+
+    if(ssz==1)
+        loop=0;
+    else if(ssz==2)
+        loop=1;
+    else if(ssz==4)
+        loop=2;
+    else if(ssz==8)
+        loop=3;
+    else if(ssz==16)
+        loop=4;
+    else{
+        printk("%s(%d)logic sector size error\n",__func__,__LINE__);
+        BUG_ON(1);
+    }
+	return ((bdev->bd_inode->i_size >> 9) >> loop) - 1ULL;
 }
 
 static inline int
@@ -197,6 +215,7 @@ static size_t
 read_lba(struct block_device *bdev, u64 lba, u8 * buffer, size_t count)
 {
 	size_t totalreadcount = 0;
+	sector_t n = lba * (bdev_hardsect_size(bdev) / 512);
 
 	if (!bdev || !buffer || lba > last_lba(bdev))
                 return 0;
@@ -204,7 +223,7 @@ read_lba(struct block_device *bdev, u64 lba, u8 * buffer, size_t count)
 	while (count) {
 		int copied = 512;
 		Sector sect;
-		unsigned char *data = read_dev_sector(bdev, lba++, &sect);
+		unsigned char *data = read_dev_sector(bdev, n++, &sect);
 		if (!data)
 			break;
 		if (copied > count)
@@ -222,7 +241,7 @@ read_lba(struct block_device *bdev, u64 lba, u8 * buffer, size_t count)
  * alloc_read_gpt_entries(): reads partition entries from disk
  * @bdev
  * @gpt - GPT header
- * 
+ *
  * Description: Returns ptes on success,  NULL on error.
  * Allocates space for PTEs based on information found in @gpt.
  * Notes: remember to free pte when you're done!
@@ -258,7 +277,7 @@ alloc_read_gpt_entries(struct block_device *bdev, gpt_header *gpt)
  * alloc_read_gpt_header(): Allocates GPT header, reads into it from disk
  * @bdev
  * @lba is the Logical Block Address of the partition table
- * 
+ *
  * Description: returns GPT header on success, NULL on error.   Allocates
  * and fills a GPT header starting at @ from @bdev.
  * Note: remember to free gpt when finished with it.
@@ -267,16 +286,17 @@ static gpt_header *
 alloc_read_gpt_header(struct block_device *bdev, u64 lba)
 {
 	gpt_header *gpt;
+	unsigned ssz = bdev_hardsect_size(bdev);
+
 	if (!bdev)
 		return NULL;
 
-	gpt = kmalloc(sizeof (gpt_header), GFP_KERNEL);
+	gpt = kmalloc(ssz, GFP_KERNEL);
 	if (!gpt)
 		return NULL;
 	memset(gpt, 0, sizeof (gpt_header));
 
-	if (read_lba(bdev, lba, (u8 *) gpt,
-		     sizeof (gpt_header)) < sizeof (gpt_header)) {
+	if (read_lba(bdev, lba, (u8 *) gpt, ssz) < ssz) {
 		kfree(gpt);
                 gpt=NULL;
 		return NULL;
@@ -404,7 +424,7 @@ is_pte_valid(const gpt_entry *pte, const u64 lastlba)
  * @lastlba is the last LBA number
  * Description: Returns nothing.  Sanity checks pgpt and agpt fields
  * and prints warnings on discrepancies.
- * 
+ *
  */
 static void
 compare_gpts(gpt_header *pgpt, gpt_header *agpt, u64 lastlba)
@@ -525,36 +545,36 @@ find_valid_gpt(struct block_device *bdev, gpt_header **gpt, gpt_entry **ptes)
 		return 0;
 
 	lastlba = last_lba(bdev);
-        if (!force_gpt) {
-                /* This will be added to the EFI Spec. per Intel after v1.02. */
-                legacymbr = kmalloc(sizeof (*legacymbr), GFP_KERNEL);
-                if (legacymbr) {
-                        memset(legacymbr, 0, sizeof (*legacymbr));
-                        read_lba(bdev, 0, (u8 *) legacymbr,
-                                 sizeof (*legacymbr));
-                        good_pmbr = is_pmbr_valid(legacymbr, lastlba);
-                        kfree(legacymbr);
-                        legacymbr=NULL;
-                }
+    if (!force_gpt) {
+        /* This will be added to the EFI Spec. per Intel after v1.02. */
+        legacymbr = kmalloc(sizeof (*legacymbr), GFP_KERNEL);
+        if (legacymbr) {
+            memset(legacymbr, 0, sizeof (*legacymbr));
+            read_lba(bdev, 0, (u8 *) legacymbr,
+                     sizeof (*legacymbr));
+            good_pmbr = is_pmbr_valid(legacymbr, lastlba);
+            kfree(legacymbr);
+            legacymbr=NULL;
+        }
                 if (!good_pmbr)
-                        goto fail;
+            goto fail;
         }
 
 	good_pgpt = is_gpt_valid(bdev, GPT_PRIMARY_PARTITION_TABLE_LBA,
 				 &pgpt, &pptes);
         if (good_pgpt)
-		good_agpt = is_gpt_valid(bdev,
-					 le64_to_cpu(pgpt->alternate_lba),
-					 &agpt, &aptes);
+	    good_agpt = is_gpt_valid(bdev,
+				 le64_to_cpu(pgpt->alternate_lba),
+				 &agpt, &aptes);
         if (!good_agpt && force_gpt)
-                good_agpt = is_gpt_valid(bdev, lastlba,
-                                         &agpt, &aptes);
+            good_agpt = is_gpt_valid(bdev, lastlba,
+                                     &agpt, &aptes);
 
         /* The obviously unsuccessful case */
         if (!good_pgpt && !good_agpt)
                 goto fail;
 
-        compare_gpts(pgpt, agpt, lastlba);
+    compare_gpts(pgpt, agpt, lastlba);
 
         /* The good cases */
         if (good_pgpt) {
@@ -563,7 +583,7 @@ find_valid_gpt(struct block_device *bdev, gpt_header **gpt, gpt_entry **ptes)
                 kfree(agpt);
                 kfree(aptes);
                 if (!good_agpt) {
-                        printk(KERN_WARNING 
+                        printk(KERN_WARNING
 			       "Alternate GPT is invalid, "
                                "using primary GPT.\n");
                 }
@@ -574,7 +594,7 @@ find_valid_gpt(struct block_device *bdev, gpt_header **gpt, gpt_entry **ptes)
                 *ptes = aptes;
                 kfree(pgpt);
                 kfree(pptes);
-                printk(KERN_WARNING 
+                printk(KERN_WARNING
                        "Primary GPT is invalid, using alternate GPT.\n");
                 return 1;
         }
@@ -615,6 +635,7 @@ efi_partition(struct parsed_partitions *state, struct block_device *bdev)
 	gpt_header *gpt = NULL;
 	gpt_entry *ptes = NULL;
 	u32 i;
+	unsigned ssz = bdev_hardsect_size(bdev) / 512;
 
 	if (!find_valid_gpt(bdev, &gpt, &ptes) || !gpt || !ptes) {
 		kfree(gpt);
@@ -625,18 +646,24 @@ efi_partition(struct parsed_partitions *state, struct block_device *bdev)
 	Dprintk("GUID Partition Table is valid!  Yea!\n");
 
 	for (i = 0; i < le32_to_cpu(gpt->num_partition_entries) && i < state->limit-1; i++) {
+		u64 start = le64_to_cpu(ptes[i].starting_lba);
+		u64 size = le64_to_cpu(ptes[i].ending_lba) -
+			   le64_to_cpu(ptes[i].starting_lba) + 1ULL;
+
 		if (!is_pte_valid(&ptes[i], last_lba(bdev)))
 			continue;
 
-		put_partition(state, i+1, le64_to_cpu(ptes[i].starting_lba),
-				 (le64_to_cpu(ptes[i].ending_lba) -
-                                  le64_to_cpu(ptes[i].starting_lba) +
-				  1ULL));
+		put_partition(state, i+1, start * ssz, size * ssz);
 
 		/* If this is a RAID volume, tell md */
 		if (!efi_guidcmp(ptes[i].partition_type_guid,
 				 PARTITION_LINUX_RAID_GUID))
 			state->parts[i+1].flags = 1;
+
+		/* If this is a EFI System partition, tell hotplug */
+		if (!efi_guidcmp(ptes[i].partition_type_guid,
+				 PARTITION_SYSTEM_GUID))
+			state->parts[i+1].is_efi_system_partition = 1;
 	}
 	kfree(ptes);
 	kfree(gpt);

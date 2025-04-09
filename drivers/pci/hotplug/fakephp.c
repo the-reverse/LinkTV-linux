@@ -330,20 +330,66 @@ static void cleanup_slots (void)
 	list_for_each_safe (tmp, next, &slot_list) {
 		dslot = list_entry (tmp, struct dummy_slot, node);
 		remove_slot(dslot);
-	}
-	
+	}	
 }
+
+
+static int legacy_notify(struct notifier_block *nb,
+			 unsigned long action, void *data)
+{
+	struct pci_dev *pdev = to_pci_dev(data);
+	struct dummy_slot *dslot;
+	struct list_head *tmp;
+	struct list_head *next;	
+	
+    switch(action)
+    {
+    case BUS_NOTIFY_ADD_DEVICE:        
+        add_slot(pdev);
+        break;
+    
+	case BUS_NOTIFY_DEL_DEVICE:
+    
+    	list_for_each_safe (tmp, next, &slot_list)
+    	{
+		    dslot = list_entry (tmp, struct dummy_slot, node);
+		    
+		    if (dslot->dev==pdev) 
+            {
+		        remove_slot(dslot);
+		        return 0;
+            }		        
+	    }	
+			
+		dev_warn(&pdev->dev, "Missing legacy fake slot?");
+		return -ENODEV;
+	}
+
+	return 0;
+}
+
+
+static struct notifier_block legacy_notifier = {
+	.notifier_call = legacy_notify
+};
+
 
 static int __init dummyphp_init(void)
 {
+    int ret = pci_scan_buses();
+    
 	info(DRIVER_DESC "\n");
-
-	return pci_scan_buses();
+	
+    /* Be alerted of any new ones */
+	bus_register_notifier(&pci_bus_type, &legacy_notifier);
+	
+	return ret;
 }
 
 
 static void __exit dummyphp_exit(void)
 {
+    bus_unregister_notifier(&pci_bus_type, &legacy_notifier);
 	cleanup_slots();
 }
 

@@ -11,5 +11,12 @@ config SND_AU1X00
 	help
 	  ALSA Sound driver for the Au1x00's AC97 port.
 
+config SND_MARS
+	bool "Mars ALSA Driver"
+	depends on SND
+	select SND_PCM
+	help
+	  ALSA Sound driver for the Mars platform.
+
 endmenu
 

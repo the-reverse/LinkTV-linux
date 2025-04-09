@@ -28,6 +28,22 @@
 #define UDF_VIRTUAL_MAP15		0x1512U
 #define UDF_VIRTUAL_MAP20		0x2012U
 #define UDF_SPARABLE_MAP15		0x1522U
+#define UDF_METADATA_MAP25		0x2511U
+
+
+struct udf_meta_data
+{
+	__u32	s_meta_file_loc;
+	__u32	s_mirror_file_loc;
+	__u32	s_bitmap_file_loc;
+	__u32	s_alloc_unit_size;
+	__u16	s_align_unit_size;
+	__u8 	s_dup_md_flag;
+	struct inode *s_metadata_fe;
+	struct inode *s_mirror_fe;
+	struct inode *s_bitmap_fe;
+};
+
 
 struct udf_sparing_data
 {
@@ -45,8 +61,8 @@ struct udf_bitmap
 {
 	__u32			s_extLength;
 	__u32			s_extPosition;
-	__u16			s_nr_groups;
-	struct buffer_head 	**s_block_bitmap;
+	__u16			s_nr_groups;		// How many blocks there are in bitmap
+	struct buffer_head 	**s_block_bitmap;	// An array of buffer heads that store the blocks of bitmap. For example, s_block_bitmap[0]->b_data stores the first block of bitmap
 };
 
 struct udf_part_map
@@ -69,6 +85,7 @@ struct udf_part_map
 	{
 		struct udf_sparing_data s_sparing;
 		struct udf_virtual_data s_virtual;
+		struct udf_meta_data s_metadata;
 	} s_type_specific;
 	__u32	(*s_partition_func)(struct super_block *, __u32, __u16, __u32);
 	__u16	s_volumeseqnum;
@@ -76,6 +93,12 @@ struct udf_part_map
 };
 
 #pragma pack()
+
+struct udf_backup_location {
+	unsigned long start_block;
+	unsigned long blocks;
+	struct udf_backup_location *next;
+};
 
 struct udf_sb_info
 {
@@ -87,8 +110,8 @@ struct udf_sb_info
 	__u16			s_partition;
 
 	/* Sector headers */
-	__s32			s_session;
-	__u32			s_anchor[4];
+	__s32			s_session;	// Record the start of the last session
+	__u32			s_anchor[4];	// Record the 4 possible anchor locations by importance. The first is the last anchor, the second is last-256, the third is 512, and the forth is 256.
 	__u32			s_lastblock;
 
 	struct buffer_head	*s_lvidbh;
@@ -117,6 +140,8 @@ struct udf_sb_info
 	struct inode		*s_vat;
 
 	struct semaphore	s_alloc_sem;
+	
+	struct udf_backup_location *backup_head;
 };
 
 #endif /* _UDF_FS_SB_H */

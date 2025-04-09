@@ -570,6 +570,29 @@ td_fill (struct ohci_hcd *ohci, u32 info,
 	/* HC might read the TD (or cachelines) right away ... */
 	wmb ();
 	td->ed->hwTailP = td->hwNextTD;
+	
+#ifdef USB_OHCI_CHECK_ALIGNMENT
+	if(is_venus_cpu() || is_neptune_cpu())
+	if ((unsigned int)td->hwCBP & (USB_OHCI_CHECK_ALIGNMENT_SIZE - 1))
+	{
+		if(len > (int)(USB_OHCI_CHECK_ALIGNMENT_SIZE - ((unsigned int)td->hwCBP & (USB_OHCI_CHECK_ALIGNMENT_SIZE - 1))))
+		{
+			// ehci qtd hw buffer cross 1k byte boundary
+			printk("#### [cfyeh] OHCI Cross 0x%x Bytes : td->hwCBP = %p, len = 0x%x\n", USB_OHCI_CHECK_ALIGNMENT_SIZE, (void *)td->hwCBP, len);
+			WARN_ON(1);
+		}
+	}
+#endif /* USB_OHCI_CHECK_ALIGNMENT */
+
+#if 0 // cfyeh ++ : debug info
+	printk("@@ td 0x%.8x @@\n", td);
+	printk("   hwINFO\t0x%.8x\n", td->hwINFO);
+	printk("   hwCBP\t0x%.8x\n", td->hwCBP);
+	printk("   hwNextTD\t0x%.8x\n", td->hwNextTD);
+	printk("   hwBE \t0x%.8x\n", td->hwBE);
+	printk("   hwPSW[0]\t0x%.8x\n", td->hwPSW[0]);
+	printk("   hwPSW[1]\t0x%.8x\n", td->hwPSW[1]);
+#endif // cfyeh -- : debug info
 }
 
 /*-------------------------------------------------------------------------*/
@@ -863,6 +886,8 @@ ed_halted (struct ohci_hcd *ohci, struct td *td, int cc, struct td *rev)
 	return rev;
 }
 
+//#define USB_DEBUG_OHCI_HCCA_DATA
+
 /* replies to the request have to be on a FIFO basis so
  * we unreverse the hc-reversed done-list
  */
@@ -871,6 +896,22 @@ static struct td *dl_reverse_done_list (struct ohci_hcd *ohci)
 	u32		td_dma;
 	struct td	*td_rev = NULL;
 	struct td	*td = NULL;
+
+#ifdef USB_DEBUG_OHCI_HCCA_DATA	
+	int		i = 0;
+	unsigned int	regs = (unsigned int) ohci->hcca;
+
+	for(i=0;i<100;i++)
+	{
+		if((i%4)==0)
+			printk("0x%.8x : ", regs);
+		printk("%.8x ", readl((void __iomem *)regs));
+		regs+=4;
+		if((i%4)==3)
+			printk("\n");		
+	}
+	printk("\n");		
+#endif /* USB_DEBUG_OHCI_HCCA_DATA */
 
 	td_dma = hc32_to_cpup (ohci, &ohci->hcca->done_head);
 	ohci->hcca->done_head = 0;

@@ -15,12 +15,15 @@
 
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
+#include <linux/rtk_cr.h>
 
-#include "mmc.h"
+//#include "mmc.h"
+#include "mmc_debug.h"
 
 #define dev_to_mmc_card(d)	container_of(d, struct mmc_card, dev)
 #define to_mmc_driver(d)	container_of(d, struct mmc_driver, drv)
 
+/*
 #define MMC_ATTR(name, fmt, args...)					\
 static ssize_t mmc_##name##_show (struct device *dev, char *buf)	\
 {									\
@@ -41,9 +44,10 @@ MMC_ATTR(oemid, "0x%04x\n", card->cid.oemid);
 MMC_ATTR(serial, "0x%08x\n", card->cid.serial);
 
 #define MMC_ATTR_RO(name) __ATTR(name, S_IRUGO, mmc_##name##_show, NULL)
+*/
 
-static struct device_attribute mmc_dev_attrs[] = {
-	MMC_ATTR_RO(cid),
+//static struct device_attribute mmc_dev_attrs[] = {
+/*	MMC_ATTR_RO(cid),
 	MMC_ATTR_RO(csd),
 	MMC_ATTR_RO(date),
 	MMC_ATTR_RO(fwrev),
@@ -53,13 +57,12 @@ static struct device_attribute mmc_dev_attrs[] = {
 	MMC_ATTR_RO(oemid),
 	MMC_ATTR_RO(serial),
 	__ATTR_NULL
-};
-
+*/
+//};
 
 static void mmc_release_card(struct device *dev)
 {
 	struct mmc_card *card = dev_to_mmc_card(dev);
-
 	kfree(card);
 }
 
@@ -74,14 +77,15 @@ static int mmc_bus_match(struct device *dev, struct device_driver *drv)
 	return !mmc_card_bad(card);
 }
 
+/*
 static int
 mmc_bus_hotplug(struct device *dev, char **envp, int num_envp, char *buf,
 		int buf_size)
 {
 	struct mmc_card *card = dev_to_mmc_card(dev);
-	char ccc[13];
-	int i = 0;
 
+	int i = 0;
+    printk(KERN_INFO "Hotplug operation=======>\n");
 #define add_env(fmt,val)						\
 	({								\
 		int len, ret = -ENOMEM;					\
@@ -96,19 +100,25 @@ mmc_bus_hotplug(struct device *dev, char **envp, int num_envp, char *buf,
 		ret;							\
 	})
 
-	for (i = 0; i < 12; i++)
-		ccc[i] = card->csd.cmdclass & (1 << i) ? '1' : '0';
-	ccc[12] = '\0';
+    if(card->card_type&(CR_SD|CR_SDHC|CR_MMC)){
+        char ccc[13];
+    	for (i = 0; i < 12; i++)
+    		ccc[i] = card->csd.cmdclass & (1 << i) ? '1' : '0';
+    	ccc[12] = '\0';
 
-	i = 0;
-	add_env("MMC_CCC=%s", ccc);
-	add_env("MMC_MANFID=%06x", card->cid.manfid);
-	add_env("MMC_NAME=%s", mmc_card_name(card));
-	add_env("MMC_OEMID=%04x", card->cid.oemid);
-
+    	i = 0;
+    	add_env("MMC_CCC=%s", ccc);
+    	add_env("MMC_MANFID=%06x",  card->cid.manfid);
+    	add_env("MMC_NAME=%s",      mmc_card_name(card));
+    	add_env("MMC_OEMID=%04x",   card->cid.oemid);
+    }else{
+    	add_env("MS_TYPE=%02X",     card->id.type);
+        add_env("MS_CATEGORY=%02X", card->id.category);
+        add_env("MS_CLASS=%02X",    card->id.class);
+    }
 	return 0;
 }
-
+*/
 static int mmc_bus_suspend(struct device *dev, pm_message_t state)
 {
 	struct mmc_driver *drv = to_mmc_driver(dev->driver);
@@ -131,15 +141,15 @@ static int mmc_bus_resume(struct device *dev)
 	return ret;
 }
 
-static struct bus_type mmc_bus_type = {
+struct bus_type mmc_bus_type = {
 	.name		= "mmc",
-	.dev_attrs	= mmc_dev_attrs,
+	//.dev_attrs	= mmc_dev_attrs,
 	.match		= mmc_bus_match,
-	.hotplug	= mmc_bus_hotplug,
+	//.hotplug	= mmc_bus_hotplug,
 	.suspend	= mmc_bus_suspend,
 	.resume		= mmc_bus_resume,
 };
-
+EXPORT_SYMBOL_GPL(mmc_bus_type);
 
 static int mmc_drv_probe(struct device *dev)
 {
@@ -164,12 +174,13 @@ static int mmc_drv_remove(struct device *dev)
  *	mmc_register_driver - register a media driver
  *	@drv: MMC media driver
  */
-int mmc_register_driver(struct mmc_driver *drv)
+int mmc_register_driver(struct mmc_driver *driver)
 {
-	drv->drv.bus = &mmc_bus_type;
-	drv->drv.probe = mmc_drv_probe;
-	drv->drv.remove = mmc_drv_remove;
-	return driver_register(&drv->drv);
+	driver->drv.bus     = &mmc_bus_type;
+	driver->drv.probe   = mmc_drv_probe;
+	driver->drv.remove  = mmc_drv_remove;
+
+	return driver_register(&driver->drv);
 }
 
 EXPORT_SYMBOL(mmc_register_driver);
@@ -190,8 +201,9 @@ EXPORT_SYMBOL(mmc_unregister_driver);
 /*
  * Internal function.  Initialise a MMC card structure.
  */
-void mmc_init_card(struct mmc_card *card, struct mmc_host *host)
+void mmc_init_card_sysfs(struct mmc_card *card, struct mmc_host *host)
 {
+    mmcinfo("\n");
 	memset(card, 0, sizeof(struct mmc_card));
 	card->host = host;
 	device_initialize(&card->dev);
@@ -217,20 +229,27 @@ int mmc_register_card(struct mmc_card *card)
  */
 void mmc_remove_card(struct mmc_card *card)
 {
-	if (mmc_card_present(card))
+    struct mmc_host *host=card->host;
+
+    mmcinfo("mmc_card:0x%p\n",card);
+	if (mmc_card_present(card)){
 		device_del(&card->dev);
+	}
 
 	put_device(&card->dev);
+	host->card=0;
 }
-
+EXPORT_SYMBOL_GPL(mmc_remove_card);
 
 static int __init mmc_init(void)
 {
+//    printk("mmc_init\n");
 	return bus_register(&mmc_bus_type);
 }
 
 static void __exit mmc_exit(void)
 {
+//    printk("mmc_exit\n");
 	bus_unregister(&mmc_bus_type);
 }
 

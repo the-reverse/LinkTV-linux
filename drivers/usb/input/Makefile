@@ -26,6 +26,11 @@ ifeq ($(CONFIG_HID_FF),y)
 	usbhid-objs	+= hid-ff.o
 endif
 
+# cyhuang (2011/05/16) : Add for realtek keymap (MCE or keyboard media key support)
+ifeq ($(CONFIG_REALTEK_USE_RTD_KEYMAP),y)
+    usbhid-objs += hid-rtd.o
+endif
+
 obj-$(CONFIG_USB_AIPTEK)	+= aiptek.o
 obj-$(CONFIG_USB_ATI_REMOTE)	+= ati_remote.o
 obj-$(CONFIG_USB_HID)		+= usbhid.o
@@ -37,3 +42,8 @@ obj-$(CONFIG_USB_EGALAX)	+= touchkitusb.o
 obj-$(CONFIG_USB_POWERMATE)	+= powermate.o
 obj-$(CONFIG_USB_WACOM)		+= wacom.o
 obj-$(CONFIG_USB_XPAD)		+= xpad.o
+
+ifeq ($(CONFIG_USB_DEBUG),y)
+EXTRA_CFLAGS += -DDEBUG
+endif
+

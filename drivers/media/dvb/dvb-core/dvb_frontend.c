@@ -431,8 +431,10 @@ static int dvb_frontend_thread(void *data)
 			update_delay(&quality, &delay, fepriv->min_delay, s & FE_HAS_LOCK);
 
 			/* we're tuned, and the lock is still good... */
-			if (s & FE_HAS_LOCK)
+			if (s & FE_HAS_LOCK){
+				delay = HZ >> 1;    /* kevin_add for speed up update speed */
 				continue;
+			}
 			else {
 				/* if we _WERE_ tuned, but now don't have a lock,
 				 * need to zigzag */
@@ -602,7 +604,7 @@ static int dvb_frontend_ioctl(struct inode *inode, struct file *file,
 
 	dprintk ("%s\n", __FUNCTION__);
 
-	if (!fe || fepriv->exit)
+	if (!fe ||fepriv->exit)
 		return -ENODEV;
 
 	if ((file->f_flags & O_ACCMODE) == O_RDONLY &&
@@ -783,6 +785,92 @@ static int dvb_frontend_ioctl(struct inode *inode, struct file *file,
 			err = fe->ops->get_frontend(fe, (struct dvb_frontend_parameters*) parg);
 		}
 		break;
+		
+    case FE_USER_CMD:
+        if (fe->ops->user_cmd){
+            struct dvb_fe_user_cmd*     p_user_cmd_arg= (struct dvb_fe_user_cmd*)parg;
+            err= fe->ops->user_cmd(fe,
+                                   p_user_cmd_arg->cmd,
+                                   p_user_cmd_arg->arg_in,
+                                   p_user_cmd_arg->n_arg_in,
+                                   p_user_cmd_arg->arg_out,
+                                   p_user_cmd_arg->n_arg_out);
+        }
+        break;
+        
+#ifdef CONFIG_DVB_FE_DIRECT_PASSTHROUGH
+        
+        case FE_PASSTHROUGH_CTRL:
+
+            if (fe->ops->passthrough_control){
+                
+                struct dvb_passthrough_ctrl ctrl;
+                
+                copy_from_user(&ctrl, (__user struct dvb_passthrough_ctrl*) parg, sizeof(ctrl));                                
+                
+                err= fe->ops->passthrough_control(fe, ctrl.cmd, ctrl.mode);
+            }
+            break;
+        case FE_SET_PASSTHROUGH_BUFFER:
+            
+            if (fe->ops->set_passthrough_buffer)
+            {                
+                struct dvb_passthrough_buffer* passthrough_buffer = (struct dvb_passthrough_buffer*) parg;                                        
+                
+                //printk("[dvb frontend] set buffer : buff=%p, size  = %d\n",passthrough_buffer->buff, passthrough_buffer->size);
+                
+                err = fe->ops->set_passthrough_buffer(fe, passthrough_buffer->buff, passthrough_buffer->size);
+            }
+            break;
+            
+        case FE_READ_PASSTHROUGH_DATA:
+            
+            if (fe->ops->read_passthrough_data)
+            {
+                struct dvb_passthrough_buffer* passthrough_buffer = (struct dvb_passthrough_buffer*) parg;                                                                        
+                
+                err = fe->ops->read_passthrough_data(fe, &passthrough_buffer->buff, &passthrough_buffer->size);
+                
+                //printk("[dvb frontend] read data buffer : buff=%p, size  = %d\n",passthrough_buffer->buff, passthrough_buffer->size);                                
+            }
+            break;
+            
+        case FE_RELEASE_PASSTHROUGH_DATA:
+            
+            if (fe->ops->release_passthrough_data)
+            {
+                struct dvb_passthrough_buffer* passthrough_buffer = (struct dvb_passthrough_buffer*) parg;
+                
+                err = fe->ops->release_passthrough_data(fe, passthrough_buffer->buff, passthrough_buffer->size);
+            }
+            break;              
+
+        case FE_GET_PID_COUNT:
+            
+            if (fe->ops->get_pid_count)
+                err = fe->ops->get_pid_count(fe);
+
+            break;      
+            
+        case FE_PID_CONTROL:
+            
+            if (fe->ops->pid_filter_ctrl)
+                err = fe->ops->pid_filter_ctrl(fe, (parg) ? 1 : 0);                              
+
+            break;              
+            
+        case FE_PID_FILTER:     
+            
+            if (fe->ops->pid_filter)
+            {
+                struct dvb_pid_filter_param* pid_param = (struct dvb_pid_filter_param*) parg;                                
+                
+                err = fe->ops->pid_filter(fe, (int) pid_param->id, (u16) pid_param->pid, (int) pid_param->on_off);
+            }
+            break;                         
+              
+#endif
+        
 	};
 
 	up (&fepriv->sem);
@@ -815,17 +903,22 @@ static int dvb_frontend_open(struct inode *inode, struct file *file)
 	dprintk ("%s\n", __FUNCTION__);
 
 	if ((ret = dvb_generic_open (inode, file)) < 0)
-		return ret;
+		goto err1;
 
 	if ((file->f_flags & O_ACCMODE) != O_RDONLY) {
 		ret = dvb_frontend_start (fe);
 		if (ret)
-			dvb_generic_release (inode, file);
+			goto err2;
 
 		/*  empty event queue */
 		fepriv->events.eventr = fepriv->events.eventw = 0;
 	}
 
+	return ret;
+
+err2:
+	dvb_generic_release(inode, file);
+err1:
 	return ret;
 }
 
@@ -834,21 +927,45 @@ static int dvb_frontend_release(struct inode *inode, struct file *file)
 	struct dvb_device *dvbdev = file->private_data;
 	struct dvb_frontend *fe = dvbdev->priv;
 	struct dvb_frontend_private *fepriv = fe->frontend_priv;
+	int ret;
 
 	dprintk ("%s\n", __FUNCTION__);
 
 	if ((file->f_flags & O_ACCMODE) != O_RDONLY)
 		fepriv->release_jiffies = jiffies;
+		
+#ifdef CONFIG_DVB_FE_DIRECT_PASSTHROUGH
+              
+    printk("[DVB] Stop Direct Passthrough\n");
+    
+    if (fe->ops->passthrough_control)            
+        fe->ops->passthrough_control(fe, STOP_PASSTHROUGH, 0);  
+        
+    if (fe->ops->set_passthrough_buffer)
+        fe->ops->set_passthrough_buffer(fe, 0, 0);    
+        
+#endif		
 
-	return dvb_generic_release (inode, file);
+	ret = dvb_generic_release (inode, file);
+
+	if (dvbdev->users == -1) {
+		if (fepriv->exit == 1) {
+			fops_put(file->f_op);
+			file->f_op = NULL;
+			wake_up(&dvbdev->wait_queue);
+		}
+	}
+
+	return ret;
 }
+
 
 static struct file_operations dvb_frontend_fops = {
 	.owner		= THIS_MODULE,
 	.ioctl		= dvb_generic_ioctl,
 	.poll		= dvb_frontend_poll,
 	.open		= dvb_frontend_open,
-	.release	= dvb_frontend_release
+	.release	= dvb_frontend_release,
 };
 
 int dvb_register_frontend(struct dvb_adapter* dvb,
@@ -901,14 +1018,25 @@ int dvb_unregister_frontend(struct dvb_frontend* fe)
 	dprintk ("%s\n", __FUNCTION__);
 
 	down (&frontend_mutex);
-	dvb_unregister_device (fepriv->dvbdev);
 	dvb_frontend_stop (fe);
+	up (&frontend_mutex);
+
+	if (fepriv->dvbdev->users < -1)
+		wait_event(fepriv->dvbdev->wait_queue,
+				fepriv->dvbdev->users==-1);
+
+	down (&frontend_mutex);
+
 	if (fe->ops->release)
 		fe->ops->release(fe);
 	else
 		printk("dvb_frontend: Demodulator (%s) does not have a release callback!\n", fe->ops->info.name);
+
+	dvb_unregister_device (fepriv->dvbdev);
+
 	/* fe is invalid now */
 	kfree(fepriv);
+	fe->frontend_priv = NULL;
 	up (&frontend_mutex);
 	return 0;
 }

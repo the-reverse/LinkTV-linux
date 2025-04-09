@@ -1,0 +1,1 @@
+#undef CONFIG_REALTEK_CPU_MARS

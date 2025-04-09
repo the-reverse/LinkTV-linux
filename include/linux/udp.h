@@ -24,7 +24,7 @@ struct udphdr {
 	__u16	dest;
 	__u16	len;
 	__u16	check;
-};
+} __attribute__ ((packed));
 
 /* UDP socket options */
 #define UDP_CORK	1	/* Never send partially complete segments */
@@ -51,7 +51,7 @@ struct udp_sock {
 	 * when the socket is uncorked.
 	 */
 	__u16		 len;		/* total length of pending frames */
-};
+} __attribute__ ((packed));
 
 static inline struct udp_sock *udp_sk(const struct sock *sk)
 {

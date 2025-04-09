@@ -60,6 +60,7 @@ extern void destroy_workqueue(struct workqueue_struct *wq);
 extern int FASTCALL(queue_work(struct workqueue_struct *wq, struct work_struct *work));
 extern int FASTCALL(queue_delayed_work(struct workqueue_struct *wq, struct work_struct *work, unsigned long delay));
 extern void FASTCALL(flush_workqueue(struct workqueue_struct *wq));
+extern void FASTCALL(freeze_worker_thread(struct workqueue_struct *wq));
 
 extern int FASTCALL(schedule_work(struct work_struct *work));
 extern int FASTCALL(schedule_delayed_work(struct work_struct *work, unsigned long delay));

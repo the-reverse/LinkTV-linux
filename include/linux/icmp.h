@@ -80,7 +80,7 @@ struct icmphdr {
 		__u16	mtu;
 	} frag;
   } un;
-};
+} __attribute__ ((packed));
 
 /*
  *	constants for (set|get)sockopt

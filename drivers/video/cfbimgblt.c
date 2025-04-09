@@ -43,33 +43,29 @@
 #define DPRINTK(fmt, args...)
 #endif
 
-static u32 cfb_tab8[] = {
-#if defined(__BIG_ENDIAN)
-    0x00000000,0x000000ff,0x0000ff00,0x0000ffff,
-    0x00ff0000,0x00ff00ff,0x00ffff00,0x00ffffff,
-    0xff000000,0xff0000ff,0xff00ff00,0xff00ffff,
-    0xffff0000,0xffff00ff,0xffffff00,0xffffffff
-#elif defined(__LITTLE_ENDIAN)
-    0x00000000,0xff000000,0x00ff0000,0xffff0000,
-    0x0000ff00,0xff00ff00,0x00ffff00,0xffffff00,
-    0x000000ff,0xff0000ff,0x00ff00ff,0xffff00ff,
-    0x0000ffff,0xff00ffff,0x00ffffff,0xffffffff
-#else
-#error FIXME: No endianness??
-#endif
+static const u32 cfb_tab8_be[] = {
+	0x00000000,0x000000ff,0x0000ff00,0x0000ffff,
+	0x00ff0000,0x00ff00ff,0x00ffff00,0x00ffffff,
+	0xff000000,0xff0000ff,0xff00ff00,0xff00ffff,
+	0xffff0000,0xffff00ff,0xffffff00,0xffffffff
 };
 
-static u32 cfb_tab16[] = {
-#if defined(__BIG_ENDIAN)
-    0x00000000, 0x0000ffff, 0xffff0000, 0xffffffff
-#elif defined(__LITTLE_ENDIAN)
-    0x00000000, 0xffff0000, 0x0000ffff, 0xffffffff
-#else
-#error FIXME: No endianness??
-#endif
+static const u32 cfb_tab8_le[] = {
+	0x00000000,0xff000000,0x00ff0000,0xffff0000,
+	0x0000ff00,0xff00ff00,0x00ffff00,0xffffff00,
+	0x000000ff,0xff0000ff,0x00ff00ff,0xffff00ff,
+	0x0000ffff,0xff00ffff,0x00ffffff,0xffffffff
 };
 
-static u32 cfb_tab32[] = {
+static const u32 cfb_tab16_be[] = {
+	0x00000000, 0x0000ffff, 0xffff0000, 0xffffffff
+};
+
+static const u32 cfb_tab16_le[] = {
+	0x00000000, 0xffff0000, 0x0000ffff, 0xffffffff
+};
+
+static const u32 cfb_tab32[] = {
 	0x00000000, 0xffffffff
 };
 
@@ -233,10 +229,10 @@ static inline void fast_imageblit(const struct fb_image *image, struct fb_info *
 		
 	switch (bpp) {
 	case 8:
-		tab = cfb_tab8;
+		tab = fb_be_math(p) ? cfb_tab8_be : cfb_tab8_le;
 		break;
 	case 16:
-		tab = cfb_tab16;
+		tab = fb_be_math(p) ? cfb_tab16_be : cfb_tab16_le;
 		break;
 	case 32:
 		tab = cfb_tab32;

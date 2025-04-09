@@ -18,6 +18,7 @@
 #include <linux/types.h>
 #include <linux/module.h>
 #include <linux/pm.h>
+#include <linux/notifier.h>
 #include <asm/semaphore.h>
 #include <asm/atomic.h>
 
@@ -56,6 +57,7 @@ struct bus_type {
 	struct bus_attribute	* bus_attrs;
 	struct device_attribute	* dev_attrs;
 	struct driver_attribute	* drv_attrs;
+	struct blocking_notifier_head bus_notifier;
 
 	int		(*match)(struct device * dev, struct device_driver * drv);
 	int		(*hotplug) (struct device *dev, char **envp, 
@@ -81,6 +83,29 @@ int bus_for_each_dev(struct bus_type * bus, struct device * start, void * data,
 
 int bus_for_each_drv(struct bus_type * bus, struct device_driver * start, 
 		     void * data, int (*fn)(struct device_driver *, void *));
+
+/*
+ * Bus notifiers: Get notified of addition/removal of devices
+ * and binding/unbinding of drivers to devices.
+ * In the long run, it should be a replacement for the platform
+ * notify hooks.
+ */
+struct notifier_block;
+
+extern int bus_register_notifier(struct bus_type *bus,
+                                struct notifier_block *nb);
+extern int bus_unregister_notifier(struct bus_type *bus,
+                                  struct notifier_block *nb);
+
+/* All 4 notifers below get called with the target struct device *
+ * as an argument. Note that those functions are likely to be called
+ * with the device semaphore held in the core, so be careful.
+ */
+#define BUS_NOTIFY_ADD_DEVICE          0x00000001 /* device added */
+#define BUS_NOTIFY_DEL_DEVICE          0x00000002 /* device removed */
+#define BUS_NOTIFY_BOUND_DRIVER                0x00000003 /* driver bound to device */
+#define BUS_NOTIFY_UNBIND_DRIVER       0x00000004 /* driver about to be
+                                                     unbound */
 
 
 /* driverfs interface for exporting bus attributes */
@@ -265,6 +290,10 @@ struct device {
 	struct kobject kobj;
 	char	bus_id[BUS_ID_SIZE];	/* position on parent bus */
 
+	struct semaphore sem;	/* semaphore to synchronize calls to
+				 * its driver.
+				 */
+
 	struct bus_type	* bus;		/* type of bus device is on */
 	struct device_driver *driver;	/* which driver has allocated this
 					   device */
@@ -332,9 +361,10 @@ extern void driver_attach(struct device_driver * drv);
 
 struct device_attribute {
 	struct attribute	attr;
-	ssize_t (*show)(struct device * dev, char * buf);
-	ssize_t (*store)(struct device * dev, const char * buf, size_t count);
-};
+	ssize_t (*show)(struct device *dev, struct device_attribute *attr,
+			char *buf);
+	ssize_t (*store)(struct device *dev, struct device_attribute *attr,
+			 const char *buf, size_t count);};
 
 #define DEVICE_ATTR(_name,_mode,_show,_store) \
 struct device_attribute dev_attr_##_name = __ATTR(_name,_mode,_show,_store)

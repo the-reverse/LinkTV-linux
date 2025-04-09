@@ -111,7 +111,6 @@ static int ip_dev_loopback_xmit(struct sk_buff *newskb)
 #ifdef CONFIG_NETFILTER_DEBUG
 	nf_debug_ip_loopback_xmit(newskb);
 #endif
-	nf_reset(newskb);
 	netif_rx(newskb);
 	return 0;
 }
@@ -195,8 +194,6 @@ static inline int ip_finish_output2(struct sk_buff *skb)
 #ifdef CONFIG_NETFILTER_DEBUG
 	nf_debug_ip_finish_output2(skb);
 #endif /*CONFIG_NETFILTER_DEBUG*/
-
-	nf_reset(skb);
 
 	if (hh) {
 		int hh_alen;
@@ -304,7 +301,11 @@ int ip_queue_xmit(struct sk_buff *skb, int ipfragok)
 	struct ip_options *opt = inet->opt;
 	struct rtable *rt;
 	struct iphdr *iph;
+#ifdef NET_DEBUG
 
+	        printk("ip_queue_xmit \n");
+#endif
+		
 	/* Skip all of this if the packet is already routed,
 	 * f.e. by something like SCTP.
 	 */

@@ -11,13 +11,49 @@ config PROFILING
 
 config OPROFILE
 	tristate "OProfile system profiling (EXPERIMENTAL)"
-	depends on PROFILING
+	depends on PROFILING && EXPERIMENTAL
 	help
 	  OProfile is a profiling system capable of profiling the
 	  whole system, include the kernel, kernel modules, libraries,
 	  and applications.
 
 	  If unsure, say N.
+
+choice
+	prompt "Profiling method"
+	default VENUS_OPROFILE_PERFORMANCE_COUNTER
+	depends on OPROFILE
+
+config METHOD_TIMER_INTERRUPT
+	bool "Use timer interrupt for profiling"
+	help
+	  No module will be loaded for this.
+
+config VENUS_OPROFILE_PERFORMANCE_COUNTER
+	bool "Use performance counter"
+	help
+	  Use performance counter to profile cache, tlb, branch
+	  instructions, ... Mars has this kind of registers, but Venus and
+	  Neptune donot.
+
+config VENUS_OPROFILE_CLOCK
+	bool "Use Venus CPU clock for oprofile"
+	depends on REALTEK_USE_EXTERNAL_TIMER_INTERRUPT
+	help
+	  Use Venus's CPU clock to drive oprofile, instead of the default
+	  scheduler timer interrupt. The CPU clock can drive sampling rate
+	  at 2500 (default, changable) per second, compared to 100 sampling
+	  per second (fixed) for default timer.
+
+
+endchoice
+
+config VENUS_OPROFILE_FREQ
+	int "Venus oprofile sampling frequency" 
+	depends on VENUS_OPROFILE_CLOCK
+	default "2500"
+	help
+	   Sampling frequency of Oprofile using Venus internal clock.
 
 endmenu
 

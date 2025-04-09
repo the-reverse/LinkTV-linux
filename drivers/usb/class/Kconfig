@@ -15,6 +15,25 @@ config USB_AUDIO
 	  To compile this driver as a module, choose M here: the
 	  module will be called audio.
 
+config USB_AUDIO_IN_THREAD
+	bool "USB AudioIn Thread support"
+	depends on USB_AUDIO
+	help
+	  Say Y here if you want to support USB audio in thread
+
+config USB_AUDIO_IN_THREAD_VID
+	hex "VID for USB_AUDIO_IN_THREAD"
+	depends on USB_AUDIO_IN_THREAD
+	default "0"
+	help
+	  VID for USB_AUDIO_IN_THREAD.
+
+config USBAUDIO_TEST_THREAD_WO_IOCTL
+	bool "USB AudioIn Thread w/o ioctl"
+	depends on USB_AUDIO_IN_THREAD
+	help
+	  Say Y here if you want to support USB audio in thread w/o ioctl
+
 comment "USB Bluetooth TTY can only be used with disabled Bluetooth subsystem"
 	depends on USB && BT
 

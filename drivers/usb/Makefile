@@ -33,6 +33,7 @@ obj-$(CONFIG_USB_POWERMATE)	+= input/
 obj-$(CONFIG_USB_WACOM)		+= input/
 obj-$(CONFIG_USB_XPAD)		+= input/
 
+obj-$(CONFIG_USB_UVC)       	+= media/
 obj-$(CONFIG_USB_DABUSB)	+= media/
 obj-$(CONFIG_USB_DSBR)		+= media/
 obj-$(CONFIG_USB_IBMCAM)	+= media/
@@ -72,3 +73,6 @@ obj-$(CONFIG_USB_PHIDGETSERVO)	+= misc/
 
 obj-$(CONFIG_USB_ATM)		+= atm/
 obj-$(CONFIG_USB_SPEEDTOUCH)	+= atm/
+
+# cyhuang (2011/02/25) : Add MTP/PTP support.
+obj-$(CONFIG_USB_MTP)       += mtp/

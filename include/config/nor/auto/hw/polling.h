@@ -1,0 +1,1 @@
+#define CONFIG_NOR_AUTO_HW_POLLING 1

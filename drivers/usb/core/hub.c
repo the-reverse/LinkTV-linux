@@ -9,11 +9,6 @@
  */
 
 #include <linux/config.h>
-#ifdef CONFIG_USB_DEBUG
-	#define DEBUG
-#else
-	#undef DEBUG
-#endif
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/module.h>
@@ -30,10 +25,17 @@
 #include <asm/semaphore.h>
 #include <asm/uaccess.h>
 #include <asm/byteorder.h>
+#include <platform.h>	// for get board id
+#include <linux/kobject_uevent.h> // for send a hotplug signal for over-current
+#include <asm/io.h>	// for inl / outl
+#include <venus.h>	// for VENUS_USB_EHCI_USBINTR / VENUS_USB_HOST_WRAPPER ...
+#include <mars.h>
 
 #include "usb.h"
 #include "hcd.h"
 #include "hub.h"
+#include <platform.h>
+#include <rl5829.h>
 
 /* Protect struct usb_device->state and ->children members
  * Note: Both are also protected by ->serialize, except that ->state can
@@ -277,12 +279,33 @@ static int get_port_status(struct usb_device *hdev, int port1,
 	return status;
 }
 
+#ifdef USB_HACK_EHCI_WIFI_UNPLUG_HANG
+static int usb_hack_wifi_unplug = 0;
+static int usb_hack_ehci_interrupt = 0;
+#endif /* USB_HACK_EHCI_WIFI_UNPLUG_HANG */
+
 static void kick_khubd(struct usb_hub *hub)
 {
 	unsigned long	flags;
 
 	spin_lock_irqsave(&hub_event_lock, flags);
 	if (list_empty(&hub->event_list)) {
+
+#ifdef USB_HACK_EHCI_WIFI_UNPLUG_HANG
+		if(current->prio <= 100)	// interrupt in real-time thread
+		{
+			printk("###### [cfyeh-debug] %s(%d) - task name: %s, priority: %d \n", __func__, __LINE__, current->comm, current->prio);
+			usb_hack_ehci_interrupt = inl(VENUS_USB_EHCI_USBINTR);
+			if(usb_hack_ehci_interrupt)
+			{
+				printk("###### [cfyeh-debug] %s(%d) VENUS_USB_EHCI_USBINTR = 0x%x\n", __func__, __LINE__, inl(VENUS_USB_EHCI_USBINTR));
+				outl(0, VENUS_USB_EHCI_USBINTR);
+				printk("###### [cfyeh-debug] %s(%d) VENUS_USB_EHCI_USBINTR = 0x%x\n", __func__, __LINE__, inl(VENUS_USB_EHCI_USBINTR));
+				usb_hack_wifi_unplug = 1;
+			}
+		}
+#endif /* USB_HACK_EHCI_WIFI_UNPLUG_HANG */
+
 		list_add_tail(&hub->event_list, &hub_event_list);
 		wake_up(&khubd_wait);
 	}
@@ -435,6 +458,7 @@ void usb_hub_tt_clear_buffer (struct usb_device *udev, int pipe)
 static void hub_power_on(struct usb_hub *hub)
 {
 	int port1;
+	unsigned pgood_delay = hub->descriptor->bPwrOn2PwrGood * 2;
 
 	/* if hub supports power switching, enable power on each port */
 	if ((hub->descriptor->wHubCharacteristics & HUB_CHAR_LPSM) < 2) {
@@ -444,8 +468,8 @@ static void hub_power_on(struct usb_hub *hub)
 					USB_PORT_FEAT_POWER);
 	}
 
-	/* Wait for power to be enabled */
-	msleep(hub->descriptor->bPwrOn2PwrGood * 2);
+	/* Wait at least 100 msec for power to become stable */
+	msleep(max(pgood_delay, (unsigned) 100));
 }
 
 static void hub_quiesce(struct usb_hub *hub)
@@ -492,6 +516,25 @@ static int hub_hub_status(struct usb_hub *hub,
 	return ret;
 }
 
+#if defined (CONFIG_USB_FIRST_CLASS_HUB_PORT_POWER_CONTROL)
+static int usb_disable_port_power = 0;
+int usb_disable_port_power_status = 0;
+#elif defined (USB_HACK_DISABLE_PORT_POWER)
+// hack by cfyeh : for disable port 2-4 power on hub which is on the root port
+static int usb_disable_port_power = 0;
+int usb_disable_port_power_status = 0;
+int usb_first_class_hub_power_off_at_port_two_to_four(void)
+{
+	return (platform_info.board_id == C03_pvr_board
+			|| platform_info.board_id == C03_pvr2_board
+			|| platform_info.board_id == C04_pvr_board
+			|| platform_info.board_id == C04_pvr2_board);
+}
+#else
+static int usb_disable_port_power = 0;
+int usb_disable_port_power_status = 0;
+#endif /* CONFIG_USB_FIRST_CLASS_HUB_PORT_POWER_CONTROL */
+
 static int hub_configure(struct usb_hub *hub,
 	struct usb_endpoint_descriptor *endpoint)
 {
@@ -517,7 +560,11 @@ static int hub_configure(struct usb_hub *hub,
 		goto fail;
 	}
 
+#ifdef USB_512B_ALIGNMENT
+	hub->descriptor = kmalloc(USB_512B_ALIGNMENT_SIZE, GFP_KERNEL);
+#else
 	hub->descriptor = kmalloc(sizeof(*hub->descriptor), GFP_KERNEL);
+#endif /* USB_512B_ALIGNMENT */
 	if (!hub->descriptor) {
 		message = "can't kmalloc hub descriptor";
 		ret = -ENOMEM;
@@ -560,26 +607,32 @@ static int hub_configure(struct usb_hub *hub,
 
 	switch (hub->descriptor->wHubCharacteristics & HUB_CHAR_LPSM) {
 		case 0x00:
+			printk("hub : ganged power switching\n"); // add by cfyeh
 			dev_dbg(hub_dev, "ganged power switching\n");
 			break;
 		case 0x01:
+			printk("hub : individual port power switching\n"); // add by cfyeh
 			dev_dbg(hub_dev, "individual port power switching\n");
 			break;
 		case 0x02:
 		case 0x03:
+			printk("hub : no power switching (usb 1.0)\n"); // add by cfyeh
 			dev_dbg(hub_dev, "no power switching (usb 1.0)\n");
 			break;
 	}
 
 	switch (hub->descriptor->wHubCharacteristics & HUB_CHAR_OCPM) {
 		case 0x00:
+			printk("hub : global over-current protection\n"); // add by cfyeh
 			dev_dbg(hub_dev, "global over-current protection\n");
 			break;
 		case 0x08:
+			printk("hub : individual port over-current protection\n"); // add by cfyeh
 			dev_dbg(hub_dev, "individual port over-current protection\n");
 			break;
 		case 0x10:
 		case 0x18:
+			printk("hub : no over-current protection\n"); // add by cfyeh
 			dev_dbg(hub_dev, "no over-current protection\n");
                         break;
 	}
@@ -693,6 +746,134 @@ static int hub_configure(struct usb_hub *hub,
 	if (hub->has_indicators && blinkenlights)
 		hub->indicator [0] = INDICATOR_CYCLE;
 
+#if defined (CONFIG_USB_FIRST_CLASS_HUB_PORT_POWER_CONTROL)
+	usb_disable_port_power_status = 0;
+
+	if(usb_disable_port_power == 0)
+	{
+		// if the hub has parent
+		if(hub->hdev->parent != NULL)
+		{
+			// if the hub has no grandpa, it means the hub is on the root port
+			// then only set port 1 port power on
+			if(hub->hdev->parent->parent == NULL)
+			{
+				// copy from static void hub_power_on(struct usb_hub *hub) +++
+				unsigned pgood_delay = hub->descriptor->bPwrOn2PwrGood * 2;
+				int child_port = simple_strtol(CONFIG_USB_FIRST_CLASS_HUB_PORT_POWER_CONTROL_CHILD_PORT, NULL, 10);
+
+				ret = strncmp(hdev->devpath, CONFIG_USB_FIRST_CLASS_HUB_PORT_POWER_CONTROL_ROOT_PORT, 1);
+				if(!ret) {
+					if(child_port < 1 || child_port > 4)
+						ret=1;
+				}
+				/* if hub supports power switching, enable power on each port */
+				if (!ret && ((hub->descriptor->wHubCharacteristics & HUB_CHAR_LPSM) < 2)) {
+					usb_disable_port_power++;
+					usb_disable_port_power_status = 1;
+					set_port_feature(hub->hdev, child_port, USB_PORT_FEAT_POWER);
+					printk("[cfyeh] Disable ports' power w/o port %d of Hub on board by port power control OK !\n", child_port);
+				}
+
+				/* Wait at least 100 msec for power to become stable */
+				msleep(max(pgood_delay, (unsigned) 100));
+				// copy from static void hub_power_on(struct usb_hub *hub) ---
+			}
+		}
+	}
+
+	if (usb_disable_port_power_status == 0)
+#elif defined (USB_HACK_DISABLE_PORT_POWER)
+// hack by cfyeh : for disable port 2-4 power on hub which is on the root port
+	// if there is a bulit-in hub on board,
+	// do below code to disable port 2-4
+	usb_disable_port_power_status = 0;
+	if(usb_disable_port_power == 0)
+	{
+		if(usb_first_class_hub_power_off_at_port_two_to_four() == 1)
+		{
+			// if the hub has parent
+			if(hub->hdev->parent != NULL)
+			{
+				// if the hub has no grandpa, it means the hub is on the root port
+				// then only set port 1 port power on
+				//printk("%s(%d) hub->hdev->descriptor.idVendor %4x\n", __func__, __LINE__, le16_to_cpu(hub->hdev->descriptor.idVendor));
+				//printk("%s(%d) hub->hdev->descriptor.idProduct %4x\n", __func__, __LINE__, le16_to_cpu(hub->hdev->descriptor.idProduct));
+				if(hub->hdev->parent->parent == NULL)
+				{
+					// copy from static void hub_power_on(struct usb_hub *hub) +++
+					unsigned pgood_delay = hub->descriptor->bPwrOn2PwrGood * 2;
+
+					/* if hub supports power switching, enable power on each port */
+					if ((hub->descriptor->wHubCharacteristics & HUB_CHAR_LPSM) < 2) {
+						usb_disable_port_power++;
+						usb_disable_port_power_status = 1;
+						set_port_feature(hub->hdev, 1, USB_PORT_FEAT_POWER);
+						printk("[cfyeh] Disable ports' power w/o port one (2-4) of Hub on board by port power control OK !\n");
+					}
+
+					/* Wait at least 100 msec for power to become stable */
+					msleep(max(pgood_delay, (unsigned) 100));
+					// copy from static void hub_power_on(struct usb_hub *hub) ---
+				}
+			}
+		}
+	}
+
+	if (usb_disable_port_power_status == 0)
+#else
+	usb_disable_port_power_status = 0;
+
+	//printk("#@# cfyeh-debug %s(%d) platform_info.usb_internal_port %s\n", __func__, __LINE__, platform_info.usb_internal_port);
+	if(usb_disable_port_power == 0)
+	{
+		int len = strlen(platform_info.usb_internal_port);
+		char root_ptr[8], child_ptr[8];
+
+	//printk("#@# cfyeh-debug %s(%d) len %d\n", __func__, __LINE__, len);
+		if(len >= 3) {
+	//printk("#@# cfyeh-debug %s(%d)\n", __func__, __LINE__);
+			snprintf(root_ptr, 2, "%c", platform_info.usb_internal_port[0]);
+			snprintf(child_ptr, 2, "%c", platform_info.usb_internal_port[2]);
+		}
+
+	//printk("#@# cfyeh-debug %s(%d) root_ptr %s\n", __func__, __LINE__, root_ptr);
+	//printk("#@# cfyeh-debug %s(%d) child_ptr %s\n", __func__, __LINE__, child_ptr);
+		
+		// if the hub has parent
+		if((hub->hdev->parent != NULL) && (len >= 3))
+		{
+			// if the hub has no grandpa, it means the hub is on the root port
+			// then only set port 1 port power on
+			if(hub->hdev->parent->parent == NULL)
+			{
+				// copy from static void hub_power_on(struct usb_hub *hub) +++
+				unsigned pgood_delay = hub->descriptor->bPwrOn2PwrGood * 2;
+				int child_port = simple_strtol(child_ptr, NULL, 10);
+
+				ret = strncmp(hdev->devpath, root_ptr, 1);
+				if(!ret) {
+					if(child_port < 1 || child_port > 4)
+						ret=1;
+				}
+				/* if hub supports power switching, enable power on each port */
+				if (!ret && ((hub->descriptor->wHubCharacteristics & HUB_CHAR_LPSM) < 2)) {
+					usb_disable_port_power++;
+					usb_disable_port_power_status = 1;
+					set_port_feature(hub->hdev, child_port, USB_PORT_FEAT_POWER);
+					printk("[cfyeh] Disable ports' power w/o port %d of Hub on board by port power control OK !\n", child_port);
+				}
+
+				/* Wait at least 100 msec for power to become stable */
+				msleep(max(pgood_delay, (unsigned) 100));
+				// copy from static void hub_power_on(struct usb_hub *hub) ---
+			}
+		}
+	}
+
+	if (usb_disable_port_power_status == 0)
+#endif /* CONFIG_USB_FIRST_CLASS_HUB_PORT_POWER_CONTROL */
+
 	hub_power_on(hub);
 	hub_activate(hub);
 	return 0;
@@ -705,6 +886,10 @@ fail:
 }
 
 static unsigned highspeed_hubs;
+
+#ifdef USB_TO_NOTIFY_TIER
+extern int usb_bHubOverTier;
+#endif /* USB_TO_NOTIFY_TIER */
 
 static void hub_disconnect(struct usb_interface *intf)
 {
@@ -777,6 +962,17 @@ descriptor_error:
 	if ((endpoint->bmAttributes & USB_ENDPOINT_XFERTYPE_MASK)
 			!= USB_ENDPOINT_XFER_INT)
 		goto descriptor_error;
+
+#ifdef USB_TO_NOTIFY_TIER
+	if(hdev->tier > 6)
+	{
+		hdev->tier++; // it seems be that hdev->tier = 8
+		atomic_inc((void *)&usb_bHubOverTier);
+		kobject_hotplug(&hdev->dev.kobj, KOBJ_TIER);
+		printk("###### [cfyeh] %s(%d) over 7 tier in USB spec!!!\n", __func__, __LINE__);
+		return -ENODEV;
+	}
+#endif /* USB_TO_NOTIFY_TIER */
 
 	/* We found a hub */
 	dev_info (&intf->dev, "USB hub found\n");
@@ -1024,6 +1220,18 @@ void usb_disconnect(struct usb_device **pdev)
 	} else
 		down(&udev->serialize);
 
+#ifdef USB_TO_NOTIFY_TIER
+	// only it will be true when hub is at tier 7 (udev->tier = 8)
+	if(udev->tier > 7)
+		atomic_dec((void *)&usb_bHubOverTier);
+#endif /* USB_TO_NOTIFY_TIER */
+
+	if(is_jupiter_cpu() && (strlen(udev->devpath) == 1) && (udev->speed == USB_SPEED_FULL)) {
+		USBPHY_SetReg_Default_33_port(simple_strtol(udev->devpath, NULL, 10), 1);
+	} else if(is_jupiter_cpu() && (strlen(udev->devpath) == 1) && (udev->speed == USB_SPEED_LOW)) {
+		USBPHY_SetReg_Default_33_port(simple_strtol(udev->devpath, NULL, 10), 1);
+	}
+
 	dev_info (&udev->dev, "USB disconnect, address %d\n", udev->devnum);
 
 	/* Free up all the children before we remove this device */
@@ -1115,22 +1323,6 @@ static inline void show_string(struct usb_device *udev, char *id, char *string)
 {}
 #endif
 
-static void get_string(struct usb_device *udev, char **string, int index)
-{
-	char *buf;
-
-	if (!index)
-		return;
-	buf = kmalloc(256, GFP_KERNEL);
-	if (!buf)
-		return;
-	if (usb_string(udev, index, buf, 256) > 0)
-		*string = buf;
-	else
-		kfree(buf);
-}
-
-
 #ifdef	CONFIG_USB_OTG
 #include "otg_whitelist.h"
 #endif
@@ -1168,9 +1360,14 @@ int usb_new_device(struct usb_device *udev)
 	}
 
 	/* read the standard strings and cache them if present */
-	get_string(udev, &udev->product, udev->descriptor.iProduct);
-	get_string(udev, &udev->manufacturer, udev->descriptor.iManufacturer);
-	get_string(udev, &udev->serial, udev->descriptor.iSerialNumber);
+	udev->product = usb_cache_string(udev, udev->descriptor.iProduct);
+#if 0 // cfyeh 20071014 : work around for rtl8187b bug 
+	udev->manufacturer = usb_cache_string(udev,
+			udev->descriptor.iManufacturer);
+#else
+	udev->manufacturer = NULL;
+#endif
+	udev->serial = usb_cache_string(udev, udev->descriptor.iSerialNumber);
 
 	/* Tell the world! */
 	dev_dbg(&udev->dev, "new device strings: Mfr=%d, Product=%d, "
@@ -1347,6 +1544,22 @@ static int hub_port_wait_reset(struct usb_hub *hub, int port1,
 		if ((portchange & USB_PORT_STAT_C_CONNECTION))
 			return -EINVAL;
 
+#ifdef USB_MARS_HOST_LS_HACK
+		if (is_mars_cpu())
+		{
+			if (portstatus & USB_PORT_STAT_LOW_SPEED)
+			{
+				if((udev->parent) && (udev->parent->parent == 0))
+					USBPHY_SetReg_Default_33_LS(port1, 0x2);
+			}
+			else
+			{
+				if((udev->parent) && (udev->parent->parent == 0))
+					USBPHY_SetReg_Default_33_LS(port1, 0x0);
+			}
+		}
+#endif /* USB_MARS_HOST_LS_HACK */
+
 		/* if we`ve finished resetting, then break out of the loop */
 		if (!(portstatus & USB_PORT_STAT_RESET) &&
 		    (portstatus & USB_PORT_STAT_ENABLE)) {
@@ -1395,8 +1608,8 @@ static int hub_port_reset(struct usb_hub *hub, int port1,
 		/* return on disconnect or reset */
 		switch (status) {
 		case 0:
-			/* TRSTRCY = 10 ms */
-			msleep(10);
+			/* TRSTRCY = 10 ms; plus some extra */
+			msleep(10 + 40);
 			/* FALL THROUGH */
 		case -ENOTCONN:
 		case -ENODEV:
@@ -1418,6 +1631,9 @@ static int hub_port_reset(struct usb_hub *hub, int port1,
 	dev_err (hub->intfdev,
 		"Cannot enable port %i.  Maybe the USB cable is bad?\n",
 		port1);
+
+	printk("#@# cfyeh-debug %s(%d) send KOBJ_USB_CABLE_BAD hotplug!!!\n", __func__, __LINE__);
+	kobject_hotplug(&hub->hdev->dev.kobj, KOBJ_USB_CABLE_BAD);
 
 	return status;
 }
@@ -1479,6 +1695,9 @@ static int hub_port_suspend(struct usb_hub *hub, int port1,
 		struct usb_device *udev)
 {
 	int	status;
+#ifdef CONFIG_REALTEK_VENUS_USB
+	struct usb_hcd *	hcd;
+#endif /* CONFIG_REALTEK_VENUS_USB */
 
 	// dev_dbg(hub->intfdev, "suspend port %d\n", port1);
 
@@ -1506,6 +1725,9 @@ static int hub_port_suspend(struct usb_hub *hub, int port1,
 
 	/* see 7.1.7.6 */
 	status = set_port_feature(hub->hdev, port1, USB_PORT_FEAT_SUSPEND);
+#ifdef CONFIG_REALTEK_VENUS_USB
+	((struct usb_hcd *)udev->bus->hcpriv)->state = HC_STATE_SUSPENDED;//cfyeh
+#endif /* CONFIG_REALTEK_VENUS_USB */
 	if (status) {
 		dev_dbg(hub->intfdev,
 			"can't suspend port %d, status %d\n",
@@ -1517,6 +1739,10 @@ static int hub_port_suspend(struct usb_hub *hub, int port1,
 				NULL, 0,
 				USB_CTRL_SET_TIMEOUT);
 	} else {
+#ifdef CONFIG_REALTEK_VENUS_USB
+		hcd = (struct usb_hcd *)udev->bus->hcpriv;
+		free_irq(hcd->irq, hcd);
+#endif /* CONFIG_REALTEK_VENUS_USB */
 		/* device has up to 10 msec to fully suspend */
 		dev_dbg(&udev->dev, "usb suspend\n");
 		usb_set_device_state(udev, USB_STATE_SUSPENDED);
@@ -1628,9 +1854,14 @@ static int __usb_suspend_device (struct usb_device *udev, int port1,
 			}
 		} else
 			status = -EOPNOTSUPP;
-	} else
-		status = hub_port_suspend(hdev_to_hub(udev->parent), port1,
-				udev);
+        } else {
+#if 0 //original code
+                status = hub_port_suspend(hdev_to_hub(udev->parent), port1,\
+		                                udev);
+#else //cfyeh 2006/08/17 hack for bugnote #4021
+                status = 0;
+#endif
+	}
 
 	if (status == 0)
 		udev->dev.power.power_state = state;
@@ -1727,7 +1958,7 @@ static int finish_port_resume(struct usb_device *udev)
 			struct usb_driver	*driver;
 
 			intf = udev->actconfig->interface[i];
-			if (intf->dev.power.power_state == PMSG_SUSPEND)
+			if (intf->dev.power.power_state == PMSG_ON)
 				continue;
 			if (!intf->dev.driver) {
 				/* FIXME maybe force to alt 0 */
@@ -1760,10 +1991,27 @@ static int
 hub_port_resume(struct usb_hub *hub, int port1, struct usb_device *udev)
 {
 	int	status;
+#ifdef CONFIG_REALTEK_VENUS_USB
+	struct usb_hcd *	hcd;
+#endif /* CONFIG_REALTEK_VENUS_USB */
+
+#ifdef CONFIG_REALTEK_VENUS_USB
+	//set VENUS_USB_HOST_WRAPPER(bit 6) to '1', default '0'
+	unsigned int tmp;
+        tmp = inl(VENUS_USB_HOST_WRAPPER);
+        tmp |= 0x1 << 6;
+        outl(tmp, VENUS_USB_HOST_WRAPPER);
+        mdelay(10);
+#endif /* CONFIG_REALTEK_VENUS_USB */
 
 	// dev_dbg(hub->intfdev, "resume port %d\n", port1);
 
+	set_bit(port1, hub->busy_bits);
+
 	/* see 7.1.7.7; affects power usage, but not budgeting */
+#ifdef CONFIG_REALTEK_VENUS_USB
+	((struct usb_hcd *)udev->bus->hcpriv)->state = HC_STATE_RUNNING;//cfyeh
+#endif /* CONFIG_REALTEK_VENUS_USB */
 	status = clear_port_feature(hub->hdev,
 			port1, USB_PORT_FEAT_SUSPEND);
 	if (status) {
@@ -1776,7 +2024,22 @@ hub_port_resume(struct usb_hub *hub, int port1, struct usb_device *udev)
 
 		/* drive resume for at least 20 msec */
 		if (udev)
+		{
+#ifdef CONFIG_REALTEK_VENUS_USB
+			unsigned int retval;
+			hcd = (struct usb_hcd *)udev->bus->hcpriv;
+            clear_bit(HCD_FLAG_SAW_IRQ, &hcd->flags);
+			retval = request_irq (hcd->irq, usb_hcd_irq, SA_SHIRQ,
+					hcd->irq_descr, hcd);
+			if (retval < 0) {
+				dev_err (hcd->self.controller,
+						"can't restore IRQ after resume!\n");
+				usb_hc_died (hcd);
+				return retval;
+			}
+#endif /* CONFIG_REALTEK_VENUS_USB */
 			dev_dbg(&udev->dev, "RESUME\n");
+		}
 		msleep(25);
 
 #define LIVE_FLAGS	( USB_PORT_STAT_POWER \
@@ -1806,6 +2069,10 @@ hub_port_resume(struct usb_hub *hub, int port1, struct usb_device *udev)
 	}
 	if (status < 0)
 		hub_port_logical_disconnect(hub, port1);
+
+	clear_bit(port1, hub->busy_bits);
+	if (!hub->hdev->parent && !hub->busy_bits[0])
+		usb_enable_root_hub_irq(hub->hdev->bus);
 
 	return status;
 }
@@ -2175,6 +2442,12 @@ hub_port_init (struct usb_hub *hub, struct usb_device *udev, int port1,
 			udev->bus->controller->driver->name,
 			udev->devnum);
 
+	if(is_jupiter_cpu() && (strlen(udev->devpath) == 1) && (udev->speed == USB_SPEED_FULL)) {
+		USBPHY_SetReg_Default_33_port(simple_strtol(udev->devpath, NULL, 10), 7);
+	} else if(is_jupiter_cpu() && (strlen(udev->devpath) == 1) && (udev->speed == USB_SPEED_LOW)) {
+		USBPHY_SetReg_Default_33_port(simple_strtol(udev->devpath, NULL, 10), 3);
+	}
+
 	/* Set up TT records, if needed  */
 	if (hdev->tt) {
 		udev->tt = hdev->tt;
@@ -2203,7 +2476,11 @@ hub_port_init (struct usb_hub *hub, struct usb_device *udev, int port1,
 			int r = 0;
 
 #define GET_DESCRIPTOR_BUFSIZE	64
+#ifdef USB_512B_ALIGNMENT
+			buf = kmalloc(USB_512B_ALIGNMENT_SIZE, GFP_NOIO);
+#else
 			buf = kmalloc(GET_DESCRIPTOR_BUFSIZE, GFP_NOIO);
+#endif /* USB_512B_ALIGNMENT */
 			if (!buf) {
 				retval = -ENOMEM;
 				continue;
@@ -2218,6 +2495,8 @@ hub_port_init (struct usb_hub *hub, struct usb_device *udev, int port1,
 			 */
 			for (j = 0; j < 3; ++j) {
 				buf->bMaxPacketSize0 = 0;
+				if(j > 0)
+					msleep(100);// for iMate 32GB SSD device
 				r = usb_control_msg(udev, usb_rcvaddr0pipe(),
 					USB_REQ_GET_DESCRIPTOR, USB_DIR_IN,
 					USB_DT_DEVICE << 8, 0,
@@ -2396,6 +2675,9 @@ hub_power_remaining (struct usb_hub *hub)
 	return remaining;
 }
 
+extern int bEhciPortPower;
+extern char EhciPortPowerId[BUS_ID_SIZE];
+
 /* Handle physical or logical connection change events.
  * This routine is called when:
  * 	a port connection-change occurs;
@@ -2410,7 +2692,11 @@ static void hub_port_connect_change(struct usb_hub *hub, int port1,
 	struct usb_device *hdev = hub->hdev;
 	struct device *hub_dev = hub->intfdev;
 	int status, i;
- 
+
+#ifdef USB_DEVICE_RETRY_ONCE
+	int retry_once_status = 1;
+#endif /* USB_DEVICE_RETRY_ONCE */
+
 	dev_dbg (hub_dev,
 		"port %d, status %04x, change %04x, %s\n",
 		port1, portstatus, portchange, portspeed (portstatus));
@@ -2430,6 +2716,21 @@ static void hub_port_connect_change(struct usb_hub *hub, int port1,
 	if (hdev->bus->is_b_host)
 		portchange &= ~USB_PORT_STAT_C_CONNECTION;
 #endif
+
+	#if 1
+	if(bEhciPortPower == 2) {
+		bEhciPortPower = 0;
+	//printk("#@# cfyeh-debug %s(%d) bus_id %s\n", __func__, __LINE__, hdev->children[i-1]->dev.bus_id);
+	//printk("#@# cfyeh-debug %s(%d) EhciPortPowerId %s\n", __func__, __LINE__, EhciPortPowerId);
+		//if(!memcmp(hdev->children[i-1]->dev.bus_id, EhciPortPowerId, sizeof(EhciPortPowerId))) {
+			printk ("status %04x, change %04x\n", portstatus, portchange);
+			portchange &= ~USB_PORT_STAT_C_CONNECTION;
+			portstatus &= ~USB_PORT_STAT_CONNECTION;
+			printk ("status %04x, change %04x\n", portstatus, portchange);
+		//}
+			
+	} else
+	#endif
 
 	if (portchange & USB_PORT_STAT_C_CONNECTION) {
 		status = hub_port_debounce(hub, port1);
@@ -2469,6 +2770,10 @@ static void hub_port_connect_change(struct usb_hub *hub, int port1,
 	}
 #endif
 
+#ifdef USB_DEVICE_RETRY_ONCE
+retry_once:
+#endif /* USB_DEVICE_RETRY_ONCE */
+
 	for (i = 0; i < SET_CONFIG_TRIES; i++) {
 		struct usb_device *udev;
 
@@ -2485,6 +2790,7 @@ static void hub_port_connect_change(struct usb_hub *hub, int port1,
 
 		usb_set_device_state(udev, USB_STATE_POWERED);
 		udev->speed = USB_SPEED_UNKNOWN;
+		udev->level = hdev->level + 1;
  
 		/* set the address */
 		choose_address(udev);
@@ -2576,6 +2882,9 @@ static void hub_port_connect_change(struct usb_hub *hub, int port1,
 		return;
 
 loop_disable:
+#ifdef USB_DEVICE_RETRY_ONCE
+		if (retry_once_status != 1)
+#endif /* USB_DEVICE_RETRY_ONCE */
 		hub_port_disable(hub, port1, 1);
 loop:
 		ep0_reinit(udev);
@@ -2585,9 +2894,32 @@ loop:
 			break;
 	}
  
+#ifdef USB_DEVICE_RETRY_ONCE
+	if (retry_once_status == 1)
+	{
+		printk("[cfyeh] test to power off and on port once!!!! delay %d sec\n", USB_DEVICE_RETRY_DELAY_TIME);
+		clear_port_feature(hub->hdev, 1, USB_PORT_FEAT_POWER);
+		mdelay(USB_DEVICE_RETRY_DELAY_TIME);
+		set_port_feature(hub->hdev, 1, USB_PORT_FEAT_POWER);
+		retry_once_status--;
+		goto retry_once;
+	}
+#endif /* USB_DEVICE_RETRY_ONCE */
+
 done:
 	hub_port_disable(hub, port1, 1);
 }
+
+static unsigned int prev_kobj_address = 0;
+static int over_current_port_number = -1;
+
+#ifdef USB_MARS_OTG_TEST_MODE_JK
+int usb_mars_otg_test_mode_jk = 0;
+extern void USBPHY_SetReg_Default_3A(void);
+#endif
+
+int usb_plug_status = 0;
+EXPORT_SYMBOL (usb_plug_status);
 
 static void hub_events(void)
 {
@@ -2665,7 +2997,11 @@ static void hub_events(void)
 			dev_dbg (hub_dev, "resetting for error %d\n",
 				hub->error);
 
+			usb_plug_status++;
+			printk("#######[cfyeh-debug] %s(%d) usb_plug_status %d\n", __func__, __LINE__, usb_plug_status);
 			ret = usb_reset_device(hdev);
+			usb_plug_status--;
+			printk("#######[cfyeh-debug] %s(%d) usb_plug_status %d\n", __func__, __LINE__, usb_plug_status);
 			if (ret) {
 				dev_dbg (hub_dev,
 					"error resetting hub: %d\n", ret);
@@ -2689,6 +3025,38 @@ static void hub_events(void)
 					&portstatus, &portchange);
 			if (ret < 0)
 				continue;
+
+#ifdef USB_MARS_OTG_OVERCURRENT_DETECT
+			if(is_mars_cpu) // for mars
+			{
+				if(inl(MARS_USB_HOST_IPNEWINPUT_2PORT) & (1 << 31)) // port one over current flag
+				{
+					// otg connect
+					if((inl(MARS_USB_HOST_OTG) & 0x1) == 0x0) // otg disable
+						outl(0x1, MARS_USB_HOST_OTG); // enable otg
+				}
+				else
+				{
+					if((inl(MARS_USB_HOST_OTG) & 0x1) == 0x1) // otg enable
+						outl(0x0, MARS_USB_HOST_OTG); // disable otg
+				}
+			}
+#endif /* USB_MARS_OTG_OVERCURRENT_DETECT */
+
+#ifdef USB_MARS_EHCI_CONNECTION_STATE_POLLING
+			if(is_mars_cpu()) // for mars
+			{
+				// VENUS_SB2_CHIP_INFO: bit[31,16]
+				// 0xa0 => A version
+				// 0xb0 => B version
+				if((inl(VENUS_SB2_CHIP_INFO) >> 16) == 0xa0)
+				if (portchange & USB_PORT_STAT_CONNECTION) {
+					// printk("hub->activating = 0x%x, portstatus = 0x%x , portchange = 0x%x\n",hub->activating, portstatus , portchange);
+					outl(0x4000a081, VENUS_USB_HOST_USBIP_INPUT);
+					outl(0x40002000, MARS_USB_HOST_USBIPINPUT_2PORT);
+				}
+			}
+#endif /* USB_MARS_EHCI_CONNECTION_STATE_POLLING */
 
 			if (hub->activating && !hdev->children[i-1] &&
 					(portstatus &
@@ -2746,12 +3114,53 @@ static void hub_events(void)
 			}
 			
 			if (portchange & USB_PORT_STAT_C_OVERCURRENT) {
+#ifdef USB_MARS_OTG_TEST_MODE_JK
+				if(is_mars_cpu())// for mars
+				{
+					if(usb_mars_otg_test_mode_jk == 1)
+					{
+						usb_mars_otg_test_mode_jk = 0;
+						USBPHY_SetReg_Default_39(1);
+						USBPHY_SetReg_Default_3A();
+					}
+				}
+				else if(is_venus_cpu() || is_neptune_cpu())
+				{
+					dev_err (hub_dev,
+						"over-current change on port %d\n",
+						i);
+
+					// test to send a hotplug signal for over-current
+					if (prev_kobj_address != (unsigned int)&hub_dev->kobj &&
+							over_current_port_number != i)
+					{
+						kobject_hotplug(&hub_dev->kobj, KOBJ_OVERCUR);
+						prev_kobj_address = (unsigned int)&hub_dev->kobj;
+						over_current_port_number = i;
+					}
+
+					clear_port_feature(hdev, i,
+						USB_PORT_FEAT_C_OVER_CURRENT);
+					hub_power_on(hub);
+				}
+#else
 				dev_err (hub_dev,
 					"over-current change on port %d\n",
 					i);
+
+				// test to send a hotplug signal for over-current
+				if (prev_kobj_address != (unsigned int)&hub_dev->kobj &&
+						over_current_port_number != i)
+				{
+					kobject_hotplug(&hub_dev->kobj, KOBJ_OVERCUR);
+					prev_kobj_address = (unsigned int)&hub_dev->kobj;
+					over_current_port_number = i;
+				}
+
 				clear_port_feature(hdev, i,
 					USB_PORT_FEAT_C_OVER_CURRENT);
 				hub_power_on(hub);
+#endif /* USB_MARS_OTG_TEST_MODE_JK */
 			}
 
 			if (portchange & USB_PORT_STAT_C_RESET) {
@@ -2763,8 +3172,35 @@ static void hub_events(void)
 			}
 
 			if (connect_change)
+			{
+				usb_plug_status++;
+				printk("#######[cfyeh-debug] %s(%d) usb_plug_status %d\n", __func__, __LINE__, usb_plug_status);
+				#if 0
+				if(bEhciPortPower == 2) {
+					bEhciPortPower = 0;
+				printk("#@# cfyeh-debug %s(%d) bus_id %s\n", __func__, __LINE__, hub->hdev->children[i-1]->dev.bus_id);
+				printk("#@# cfyeh-debug %s(%d) EhciPortPowerId %s\n", __func__, __LINE__, EhciPortPowerId);
+					if(memcmp(hub->hdev->children[i-1]->dev.bus_id, EhciPortPowerId, sizeof(EhciPortPowerId))) {
+						hub_port_connect_change(hub, i,
+								portstatus, portchange);
+					}
+						
+				} else
+				#endif
 				hub_port_connect_change(hub, i,
 						portstatus, portchange);
+				usb_plug_status--;
+				printk("#######[cfyeh-debug] %s(%d) usb_plug_status %d\n", __func__, __LINE__, usb_plug_status);
+			}
+
+			if (portstatus & USB_PORT_STAT_C_CONNECTION) {
+				if (prev_kobj_address == (unsigned int)&hub_dev->kobj &&
+						over_current_port_number == i)
+				{
+					over_current_port_number = -1;
+					prev_kobj_address = 0;
+				}
+			}
 		} /* end for i */
 
 		/* deal with hub status changes */
@@ -2787,6 +3223,11 @@ static void hub_events(void)
 
 		hub->activating = 0;
 
+		/* If this is a root hub, tell the HCD it's okay to
+		* re-enable port-change interrupts now. */
+		if (!hdev->parent && !hub->busy_bits[0])
+			usb_enable_root_hub_irq(hdev->bus);
+
 loop:
 		usb_unlock_device(hdev);
 		usb_put_intf(intf);
@@ -2807,6 +3248,22 @@ static int hub_thread(void *__unused)
 	/* Send me a signal to get me die (for debugging) */
 	do {
 		hub_events();
+
+#ifdef USB_HACK_EHCI_WIFI_UNPLUG_HANG
+		if(usb_hack_wifi_unplug == 1)
+		{
+			printk("###### [cfyeh-debug] %s(%d) - task name: %s, priority: %d \n", __func__, __LINE__, current->comm, current->prio);
+			if(usb_hack_ehci_interrupt)
+			{
+				printk("###### [cfyeh-debug] %s(%d) VENUS_USB_EHCI_USBINTR = 0x%x\n", __func__, __LINE__, inl(VENUS_USB_EHCI_USBINTR));
+				outl(usb_hack_ehci_interrupt, VENUS_USB_EHCI_USBINTR);
+				printk("###### [cfyeh-debug] %s(%d) VENUS_USB_EHCI_USBINTR = 0x%x\n", __func__, __LINE__, inl(VENUS_USB_EHCI_USBINTR));
+			}
+			usb_hack_wifi_unplug = 0;
+			usb_hack_ehci_interrupt = 0;
+		}
+#endif /* USB_HACK_EHCI_WIFI_UNPLUG_HANG */
+
 		wait_event_interruptible(khubd_wait, !list_empty(&hub_event_list)); 
 		try_to_freeze(PF_FREEZE);
 	} while (!signal_pending(current));
@@ -2859,6 +3316,7 @@ int usb_hub_init(void)
 
 	return -1;
 }
+EXPORT_SYMBOL (usb_hub_init);//cfyeh+ 2005/11/07
 
 void usb_hub_cleanup(void)
 {
@@ -2878,7 +3336,7 @@ void usb_hub_cleanup(void)
 	 */
 	usb_deregister(&hub_driver);
 } /* usb_hub_cleanup() */
-
+EXPORT_SYMBOL (usb_hub_cleanup);//cfyeh+ 2005/11/07
 
 static int config_descriptors_changed(struct usb_device *udev)
 {
@@ -2890,7 +3348,14 @@ static int config_descriptors_changed(struct usb_device *udev)
 		if (len < le16_to_cpu(udev->config[index].desc.wTotalLength))
 			len = le16_to_cpu(udev->config[index].desc.wTotalLength);
 	}
+#ifdef USB_512B_ALIGNMENT
+	if(len > USB_512B_ALIGNMENT_SIZE)
+		buf = kmalloc (len, SLAB_KERNEL);
+	else
+		buf = kmalloc (USB_512B_ALIGNMENT_SIZE, SLAB_KERNEL);
+#else
 	buf = kmalloc (len, SLAB_KERNEL);
+#endif /* USB_512B_ALIGNMENT */
 	if (buf == NULL) {
 		dev_err(&udev->dev, "no mem to re-read configs after reset\n");
 		/* assume the worst */
@@ -2996,6 +3461,9 @@ int usb_reset_device(struct usb_device *udev)
 			break;
 	}
 	clear_bit(port1, parent_hub->busy_bits);
+	if (!parent_hdev->parent && !parent_hub->busy_bits[0])
+		usb_enable_root_hub_irq(parent_hdev->bus);
+
 	if (ret < 0)
 		goto re_enumerate;
  

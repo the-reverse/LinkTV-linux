@@ -62,7 +62,9 @@ config USB_DYNAMIC_MINORS
 
 config USB_SUSPEND
 	bool "USB suspend/resume (EXPERIMENTAL)"
-	depends on USB && PM && EXPERIMENTAL
+#cfyeh+ 2005/10/05
+#	depends on USB && PM && EXPERIMENTAL
+	depends on USB && EXPERIMENTAL
 	help
 	  If you say Y here, you can use driver calls or the sysfs
 	  "power/state" file to suspend or resume individual USB
@@ -96,4 +98,18 @@ config USB_OTG_WHITELIST
 	  normal Linux-USB hosts do (other than the warning), and is
 	  convenient for many stages of product development.
 
+config USB_FIRST_CLASS_HUB_PORT_POWER_CONTROL
+	bool "Control port power atfer first class hub"
+	depends on USB
+	default n
+
+config USB_FIRST_CLASS_HUB_PORT_POWER_CONTROL_ROOT_PORT
+	string "port number of root hub, index is from 1"
+	depends on USB_FIRST_CLASS_HUB_PORT_POWER_CONTROL
+	default "0"
+
+config USB_FIRST_CLASS_HUB_PORT_POWER_CONTROL_CHILD_PORT
+	string "port number of first class hub, index is from 1"
+	depends on USB_FIRST_CLASS_HUB_PORT_POWER_CONTROL
+	default "0"
 

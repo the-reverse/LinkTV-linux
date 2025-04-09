@@ -1,0 +1,30 @@
+config MTP_FS
+	tristate "Mtp File System"
+	help
+	Most USB based digital camera now adays operate using 
+	one of two protocols to talk to the compter. Some use the 
+	USB Mass Storage protocol. In general, these are the best 
+	supported.When you plug them in, the camera looks just like 
+	any other block device and can be treated like a hard drive 
+	formatted as fat (or vfat).
+	    
+	The othe protocol is the "Picture Transfer Protocol. " This
+	protocol was developed by the camera manufacturers to allow
+	enhanced communication between the camera and the computer.
+
+config MTPFS_FS_READ_AHEAD
+    bool "MTPFS Read-Ahead Buffer Support"
+    depends on MTP_FS
+    help
+      Enable MTPFS read-ahead buffer support.
+
+      If unsure, say N.
+
+config MTPFS_DIRECT_IO
+    bool "MTPFS Direct I/O Support"
+    depends on MTP_FS
+    help
+      Enable MTPFS direct I/O support.
+
+      If unsure, say N.
+

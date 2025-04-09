@@ -47,10 +47,33 @@
 #include <linux/rmap.h>
 #include <linux/mempolicy.h>
 #include <linux/key.h>
+#include <mcp.h>
+#include <mcp/mcp.h>
+//#include <mcp/rsa.h>
+#include <linux/reboot.h>	// For machine_restart
+#if CONFIG_REALTEK_TEXT_DEBUG || CONFIG_REALTEK_MEMORY_DEBUG_MODE || CONFIG_REALTEK_USER_DEBUG
+#include <linux/interrupt.h>
+
+#include <venus.h>
+
+#if CONFIG_REALTEK_TEXT_DEBUG || CONFIG_REALTEK_MEMORY_DEBUG_MODE
+#define PREFETCH_BUFFER	0x400
+
+extern unsigned int _etext;
+extern unsigned int _edata;
+extern unsigned int audio_addr;
+#endif
+#endif
+
+#ifdef CONFIG_REALTEK_TEXT_DEBUG
+atomic_t text_count;
+#endif
 
 #include <asm/io.h>
 #include <asm/bugs.h>
 #include <asm/setup.h>
+
+#include <platform.h>
 
 /*
  * This is one of the first .c files built. Error out early
@@ -104,6 +127,12 @@ static inline void acpi_early_init(void) { }
 extern void tc_init(void);
 #endif
 
+#ifdef CONFIG_REALTEK_RESERVE_DVR
+extern int DVR_zone_disable(void);
+extern int DVR_zone_enable(void);
+int reserveDVR = 0;
+#endif
+
 enum system_states system_state;
 EXPORT_SYMBOL(system_state);
 
@@ -125,6 +154,96 @@ static char *execute_command;
 
 /* Setup configured maximum number of CPUs to activate */
 static unsigned int max_cpus = NR_CPUS;
+
+#ifdef CONFIG_PRINTK
+void printk_setup(void);
+void printk_setup_tail(void);
+#endif
+
+#if CONFIG_REALTEK_TEXT_DEBUG || CONFIG_REALTEK_MEMORY_DEBUG_MODE || CONFIG_REALTEK_USER_DEBUG
+irqreturn_t sb2_dbg_isr(int irq, void *dev_id, struct pt_regs *regs)
+{
+	int itr, epc;
+//	printk("sb2 dbg number %d...\n", irq);
+
+	itr = readl((void *)0xb801a4e0);
+	if (itr & 0x410) {
+		int addr = readl((void *)0xb801a4c0), mask=0x3fffffff;
+
+		// prevent the false alarm of prefetch in audio memory region...
+		if (!(addr&0x80000000) && ((addr&mask) >= audio_addr) && ((addr&mask) < audio_addr+PREFETCH_BUFFER)) {
+			outl(0x0000400, SB2_DGB_INT);
+			return IRQ_HANDLED;
+		}
+
+		asm ("mfc0 %0, $14;": "=r"(epc));
+		printk("System got interrupt from SB2...\n");
+		printk("SB2_DBG_INT:  0x%08x \n", readl((void *)0xb801a4e0));
+		printk("SB2_DBG_ADDR: 0x%08x \n", readl((void *)0xb801a4c0));
+		printk("Access Address: 0x%x \n", epc);
+		show_regs(regs);
+		dump_stack();
+		
+		local_irq_disable();
+		while (1) ;
+	} else {
+	        return IRQ_NONE;
+	}
+
+	return IRQ_HANDLED;
+}
+
+static struct irqaction sb2_dbg_action = {
+	.handler        = sb2_dbg_isr,
+	.flags          = SA_INTERRUPT | SA_SHIRQ,
+	.name           = "SB2_DBG",
+};
+
+void __init sb2_dbg_init(void)
+{
+	if (is_venus_cpu()) {
+		printk("This is not Neptune platform. The SB2 Debug facility is disabled. \n");
+		return;
+	}
+	
+        setup_irq(VENUS_INT_SB2, &sb2_dbg_action);
+//	request_irq(5, sb2_dbg_isr, SA_SHIRQ | SA_INTERRUPT, "SB2_DBG", (void *)SB2_DBG_ID);
+/*
+	writel(0x2000000, 0xb801a458);
+	writel(0x4000000, 0xb801a478);
+	writel(0x00003ff, 0xb801a498);
+	writel(0x0000081, 0xb801a4e0);
+*/
+#ifdef CONFIG_REALTEK_TEXT_DEBUG
+	printk("<<<<< Enable TEXT protector >>>>>\n");
+	printk("\tsrc: %x \n", (zone_table[ZONE_TEXT]->zone_start_pfn)*4096);
+	printk("\tdst: %x \n", (zone_table[ZONE_TEXT]->zone_start_pfn+zone_table[ZONE_TEXT]->spanned_pages)*4096-1);
+	outl((zone_table[ZONE_TEXT]->zone_start_pfn)*4096, SB2_DGB_START_REG7);
+	outl((zone_table[ZONE_TEXT]->zone_start_pfn+zone_table[ZONE_TEXT]->spanned_pages)*4096-1, SB2_DGB_END_REG7);
+	outl(0x0003fdf, SB2_DGB_CTRL_REG7);
+	// only enable the system interrupt
+	outl(0x0000081, SB2_DGB_INT);
+#endif
+#ifdef CONFIG_REALTEK_MEMORY_DEBUG_MODE
+	printk("<<<<< Enable memory protector >>>>>\n");
+	// tlb handler (avoid trashing by audio & video)
+	outl(0x00000000, SB2_DGB_START_REG5);
+	outl(0x0000007f, SB2_DGB_END_REG5);
+	outl(0x0003e93, SB2_DGB_CTRL_REG5);
+	// kernel data (avoid trashing by audio & video)
+	outl(0x00100000+PREFETCH_BUFFER, SB2_DGB_START_REG6);
+	outl((unsigned int)&_edata-1, SB2_DGB_END_REG6);
+	outl(0x0003e93, SB2_DGB_CTRL_REG6);
+	// kernel text (avoid trashing by ourself) 
+	outl(0x00100000+PREFETCH_BUFFER, SB2_DGB_START_REG7);
+	outl((unsigned int)&_etext-1, SB2_DGB_END_REG7);
+	outl(0x00003d3, SB2_DGB_CTRL_REG7);
+
+	// only enable the system interrupt
+	outl(0x0000081, SB2_DGB_INT);
+#endif
+}
+#endif
 
 /*
  * Setup routine for controlling SMP activation
@@ -296,6 +415,40 @@ static int __init init_setup(char *str)
 }
 __setup("init=", init_setup);
 
+/* Now we only support secure boot on partition /dev/mtdblock/1. If /dev/mtdblock/1 has been modified after installation, Linux kernel will know that and do reboot. */
+#ifdef CONFIG_REALTEK_SECURE_BOOT_PARTITION
+char partition_hash_value[28]="";	// For Secure Boot V2, this is a sha1 hash value.
+static int __init partition_hash(char *hash_str)
+{
+	char *hash_tmp_ptr, *endptr;
+	char strtol_tmp[3];
+	int i;
+
+	if(strncmp(hash_str, "1:", 2))
+		return 0;
+	*(unsigned int*)(partition_hash_value+4)=simple_strtol(hash_str+2, &endptr, 10);
+	if(endptr == hash_str+2)
+		return 0;
+	if(*endptr != ':')
+		return 0;
+	hash_tmp_ptr = endptr+1;
+	if(strlen(hash_tmp_ptr)!=40)
+		return 0;
+	strtol_tmp[2]=0;
+	for(i=0;i<20;i++) {
+		strncpy(strtol_tmp, hash_tmp_ptr+2*i, 2);
+		*(unsigned char*)(partition_hash_value+8+i) = simple_strtol(strtol_tmp, &endptr, 16);
+		if(*endptr)
+			return 0;
+	}
+	partition_hash_value[0]='1';
+	platform_info.secure_boot=1;
+	return 1;
+}
+
+__setup("partition_hash=", partition_hash);
+#endif
+
 extern void setup_arch(char **);
 
 #ifndef CONFIG_SMP
@@ -425,10 +578,20 @@ asmlinkage void __init start_kernel(void)
 {
 	char * command_line;
 	extern struct kernel_param __start___param[], __stop___param[];
+#ifdef CONFIG_REALTEK_RESERVE_DVR
+	char *ptr = (char *)ntohl(*(unsigned long *)SYNC_STRUCT_ADDR);
+	unsigned int *unlzma = (unsigned int *)UNLZMA_SYNC_ADDR;
+#endif
 /*
  * Interrupts are still disabled. Do necessary setups, then
  * enable them
  */
+#ifdef CONFIG_PRINTK
+#ifdef CONFIG_SHARED_PRINTK
+	*(volatile int *)0xb801a000=0;
+#endif
+	printk_setup();
+#endif
 	lock_kernel();
 	page_address_init();
 	printk(KERN_NOTICE);
@@ -469,6 +632,9 @@ asmlinkage void __init start_kernel(void)
 	softirq_init();
 	time_init();
 
+#if CONFIG_REALTEK_TEXT_DEBUG || CONFIG_REALTEK_MEMORY_DEBUG_MODE || CONFIG_REALTEK_USER_DEBUG
+	sb2_dbg_init();
+#endif
 	/*
 	 * HACK ALERT! This is early. We're enabling the console before
 	 * we've done PCI setups etc, and console_init() must be aware of
@@ -489,6 +655,16 @@ asmlinkage void __init start_kernel(void)
 #endif
 	vfs_caches_init_early();
 	mem_init();
+#ifdef CONFIG_REALTEK_RESERVE_DVR
+	/* reserve the DVR zone for boot-up audio & video */
+//	printk("### PTR1: %p \n", ptr);
+	if ((ptr) || unlzma[0] || unlzma[1]) {
+		if (DVR_zone_disable()) {
+			printk("*****reserve DVR zone...\n");
+			reserveDVR = 1;
+		}
+	}
+#endif
 	kmem_cache_init();
 	numa_policy_init();
 	if (late_time_init)
@@ -635,6 +811,12 @@ static inline void fixup_cpu_present_map(void)
 
 static int init(void * unused)
 {
+#ifdef CONFIG_REALTEK_AUTO_RECLAIM
+	int aflag = 0, vflag = 0;
+	char *ptr = (char *)ntohl(*(unsigned long *)SYNC_STRUCT_ADDR);
+	unsigned int *unlzma = (unsigned int *)UNLZMA_SYNC_ADDR;
+#endif
+
 	lock_kernel();
 	/*
 	 * init can run on any cpu.
@@ -669,6 +851,9 @@ static int init(void * unused)
 
 	do_basic_setup();
 
+#ifdef CONFIG_PRINTK
+	printk_setup_tail();
+#endif
 	/*
 	 * check if there is an early userspace init.  If yes, let it do all
 	 * the work
@@ -683,7 +868,6 @@ static int init(void * unused)
 	 * we're essentially up and running. Get rid of the
 	 * initmem segments and start the user-mode stuff..
 	 */
-	free_initmem();
 	unlock_kernel();
 	system_state = SYSTEM_RUNNING;
 	numa_default_policy();
@@ -694,6 +878,177 @@ static int init(void * unused)
 	(void) sys_dup(0);
 	(void) sys_dup(0);
 	
+	/* 1. Discard SCPU_CLK90K_HI(0x1801b544) for simplicity.
+	 * 2. Show the value in seconds.
+	 */
+	{
+		unsigned int counter;
+
+		counter = *((unsigned int *)0xb801b540);
+		counter /= 90; /* in milliseconds */
+		printk(KERN_INFO "SCPU_CLK90K=%d.%03d sec.\n", counter/1000, counter%1000);
+	}
+#ifdef CONFIG_REALTEK_AUTO_RECLAIM
+//	printk("### PTR2: %p \n", ptr);
+	if (reserveDVR == 1) {
+		if (ptr) {
+			printk("=====check animation logo...\n");
+			while (1) {
+				if (!aflag) {
+					// check audio flag...
+					if (ptr[21]) {
+						aflag = 1;
+						printk("*****audio is ready...\n");
+					}
+				}
+				if (!vflag) {
+					// check video flag...
+					if (ptr[20]) {
+						vflag = 1;
+						printk("*****video is ready...\n");
+					}
+				}
+		
+				if (aflag && vflag)
+					break;
+		
+				msleep(100);
+			}
+			DVR_zone_enable();
+		} else {
+			printk("=====check self-unlzma flag...\n");
+			while (1) {
+				if (!aflag) {
+					// check audio flag...
+					if (!unlzma[0]) {
+						aflag = 1;
+						printk("*****audio is unlzma...\n");
+					}
+				}
+				if (!vflag) {
+					// check video flag...
+					if (!unlzma[1]) {
+						vflag = 1;
+						printk("*****video is unlzma...\n");
+					}
+				}
+		
+				if (aflag && vflag)
+					break;
+		
+				msleep(100);
+			}
+			DVR_zone_enable();
+		}
+		reserveDVR = 0;
+	}
+#endif
+	free_initmem();
+
+/* Here we check the hash value of some partition, which is passed from bootloader, to make sure that partition is not modified.
+    The format of that bootloader variable is partition_hash="[partition num]:[partition size]:[hash value]". Exp: go 0x80100000 ... partition_hash="1:1234:12341234123412341234123412341234" */
+#ifdef CONFIG_REALTEK_SECURE_BOOT_PARTITION
+	if(partition_hash_value[0] == '1') {
+		int fd=sys_open("/dev/mtdblock/1", O_RDONLY, 0);
+		int partitionsize, imagesize, hashcount;
+		int i;
+		MCP_BUFF *pBuff;
+		MCP_MD_CTX ctx;
+		unsigned char hash[MCP_MAX_DIGEST_SIZE];
+		unsigned int HashLen;
+		
+		if(fd<0) {
+			printk(KERN_ALERT "Error! sys_open cannot open /dev/mtdblock/1.\n");
+			machine_restart("Secure boot error!");
+		}
+
+		pBuff = alloc_mcpb(512*1024);
+		if(!pBuff) {
+			printk("alloc_mcpb error!\n");
+			BUG();
+		}
+                
+		MCP_MD_CTX_init(&ctx);
+		MCP_DigestInit(&ctx, MCP_mars_sha1());
+		
+		partitionsize = sys_lseek(fd, 0, 2);
+		sys_lseek(fd, 0, 0);
+		imagesize=*(unsigned int*)(partition_hash_value+4);
+		for(hashcount=0; imagesize>hashcount;) {
+			int singlecount;
+			int len;
+
+			mcpb_purge(pBuff);
+
+			if((imagesize-hashcount)>=512*1024)
+				singlecount = 512*1024;
+			else
+				singlecount = imagesize-hashcount;
+
+			len = sys_read(fd, pBuff->data, singlecount);
+
+			if(len != singlecount) {
+				printk(KERN_ALERT "Error! sys_read didn't return the number of chars we expected. len=%d\n", len);
+				sys_close(fd);
+				machine_restart("Secure boot error!");
+			}
+                        
+			mcpb_put(pBuff, singlecount);
+
+			/* For secure boot, only squashfs-root is supported, and it is scrambled before doing hash. */
+			/* Unscramble */
+			MCP_AES_ECB_Decryption(platform_info.AES_IMG_KEY, pBuff->data, pBuff->data, len);
+			/* Calculate hash value */
+//			MCP_AES_H_DataHash(hash_buffer, singlecount, hash_array, 512*1024, firstblock);
+			hashcount+=singlecount;
+			
+			MCP_DigestUpdate(&ctx, pBuff);
+		}
+		
+		MCP_DigestFinal(&ctx, hash, &HashLen);
+		MCP_MD_CTX_cleanup(&ctx);
+//		mcp_dump_data_with_text(hash, HashLen, "[MCP] SAH1 hash value : ");
+//		mcp_dump_data_with_text(partition_hash_value+8 , 20, "SAH1 hash value : ");
+
+/*
+// RSA related stuff. Now bootloader will do RSA calculation for Linux kernel.
+		BI*           signature;
+		BI*           pub_exp;
+		BI*           modulous;
+		BI*           hash_ref;
+		signature = InPutFromStr(signature_str, HEX);
+		pub_exp   = move_p(65537);
+		modulous  = InPutFromStr(modulus_str, HEX);
+		hash_ref  = init_BI();
+		rsa_verify(signature, pub_exp, modulous, hash_ref);
+		dump_bi(hash_ref);*/
+
+		if(memcmp(hash, partition_hash_value+8, 20)) {
+			printk(KERN_ALERT "Error! Hash value of partition /dev/mtdblock/1 is not matched. That partition data in Nand Flash may be modified or damaged.\n");
+			sys_close(fd);
+			machine_restart("Secure boot error!");
+		}
+
+		while(partitionsize>hashcount) {
+			int len;
+			sys_lseek(fd, hashcount&(0-512*1024), 0);
+			len = sys_read(fd, pBuff->data, 512*1024);
+			for(i=(hashcount&(512*1024-1));i<len;i++) {
+				if(pBuff->data[i] != 0xff) {
+					printk(KERN_ALERT "Error! The byte\(%d\) behind partition /dev/mtdblock/1 should be 0xFF. That partition data in Nand Flash may be modified or damaged.\n", hashcount+i);
+					sys_close(fd);
+					machine_restart("Secure boot error!");
+				}
+			}
+			hashcount+=(len-(hashcount&(512*1024-1)));
+		}
+			
+		printk("Secure boot succeeded. The partition /dev/mtdblock/1 is secure.\n");
+		free_mcpb(pBuff);
+		sys_close(fd);
+	}
+#endif
+
 	/*
 	 * We try each of these until one succeeds.
 	 *

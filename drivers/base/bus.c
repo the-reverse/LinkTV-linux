@@ -283,18 +283,23 @@ void device_bind_driver(struct device * dev)
  */
 int driver_probe_device(struct device_driver * drv, struct device * dev)
 {
+	int error = 0;
+
 	if (drv->bus->match && !drv->bus->match(dev, drv))
 		return -ENODEV;
 
+	down(&dev->sem);
 	dev->driver = drv;
 	if (drv->probe) {
-		int error = drv->probe(dev);
+		error = drv->probe(dev);
 		if (error) {
 			dev->driver = NULL;
+			up(&dev->sem);
 			return error;
 		}
 	}
 
+	up(&dev->sem);
 	device_bind_driver(dev);
 	return 0;
 }
@@ -385,7 +390,10 @@ void driver_attach(struct device_driver * drv)
 
 void device_release_driver(struct device * dev)
 {
-	struct device_driver * drv = dev->driver;
+	struct device_driver * drv;
+
+	down(&dev->sem);
+	drv = dev->driver;
 	if (drv) {
 		sysfs_remove_link(&drv->kobj, kobject_name(&dev->kobj));
 		sysfs_remove_link(&dev->kobj, "driver");
@@ -394,6 +402,7 @@ void device_release_driver(struct device * dev)
 			drv->remove(dev);
 		dev->driver = NULL;
 	}
+	up(&dev->sem);
 }
 
 
@@ -689,6 +698,8 @@ int bus_register(struct bus_type * bus)
 {
 	int retval;
 
+    BLOCKING_INIT_NOTIFIER_HEAD(&bus->bus_notifier);
+
 	retval = kobject_set_name(&bus->subsys.kset.kobj, "%s", bus->name);
 	if (retval)
 		goto out;
@@ -739,6 +750,21 @@ void bus_unregister(struct bus_type * bus)
 	kset_unregister(&bus->devices);
 	subsystem_unregister(&bus->subsys);
 }
+
+
+int bus_register_notifier(struct bus_type *bus, struct notifier_block *nb)
+{
+       return blocking_notifier_chain_register(&bus->bus_notifier, nb);
+}
+EXPORT_SYMBOL_GPL(bus_register_notifier);
+
+int bus_unregister_notifier(struct bus_type *bus, struct notifier_block *nb)
+{
+       return blocking_notifier_chain_unregister(&bus->bus_notifier, nb);
+}
+EXPORT_SYMBOL_GPL(bus_unregister_notifier);
+
+
 
 int __init buses_init(void)
 {

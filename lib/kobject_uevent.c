@@ -26,6 +26,11 @@
 #define BUFFER_SIZE	1024	/* buffer for the hotplug env */
 #define NUM_ENVP	32	/* number of env pointers */
 
+#ifdef CONFIG_REALTEK_DISABLE_BOOT_HOTPLUG
+extern dev_t	ROOT_DEV;
+extern int	hotplug_flag;
+#endif
+
 #if defined(CONFIG_KOBJECT_UEVENT) || defined(CONFIG_HOTPLUG)
 static char *action_to_string(enum kobject_action action)
 {
@@ -44,6 +49,47 @@ static char *action_to_string(enum kobject_action action)
 		return "offline";
 	case KOBJ_ONLINE:
 		return "online";
+	case KOBJ_OVERCUR:
+		return "over-current";
+	case KOBJ_TIER:
+		return "over-tier";
+	case KOBJ_UNKNOWN:
+		return "unknown-device";
+        case KOBJ_LINKUP:
+		return "linkup";
+        case KOBJ_LINKDOWN:
+                return "linkdown";
+        case KOBJ_NET_PBC:
+                return "NET_PBC";
+        case KOBJ_USBAI_UP:
+                return "USB_AI_UP";
+        case KOBJ_USBAI_DOWN:
+                return "USB_AI_DOWN";
+        case KOBJ_USBAO_UP:
+                return "USB_AO_UP";
+        case KOBJ_USBAO_DOWN:
+                return "USB_AO_DOWN";
+        case KOBJ_USBKBD_UP:
+                return "USB_KBD_UP";
+        case KOBJ_USBKBD_DOWN:
+                return "USB_KBD_DOWN";
+        case KOBJ_USBMICE_UP:
+                return "USB_MICE_UP";
+        case KOBJ_USBMICE_DOWN:
+                return "USB_MICE_DOWN";
+        case KOBJ_SCSI_OFFLINE:
+                return "SCSI_OFFLINE";
+        case KOBJ_USB_CABLE_BAD:
+                return "USB_CABLE_BAD";
+        case KOBJ_USBVI_UP:
+                return "USB_VI_UP";
+        case KOBJ_USBVI_DOWN:
+                return "USB_VI_DOWN";
+        case KOBJ_USBVO_UP:
+                return "USB_VO_UP";
+        case KOBJ_USBVO_DOWN:
+                return "USB_VO_DOWN";
+			
 	default:
 		return NULL;
 	}
@@ -205,6 +251,10 @@ void kobject_hotplug(struct kobject *kobj, enum kobject_action action)
 	static struct kset_hotplug_ops null_hotplug_ops;
 	struct kset_hotplug_ops *hotplug_ops = &null_hotplug_ops;
 
+#ifdef CONFIG_REALTEK_DISABLE_BOOT_HOTPLUG
+	if ((!hotplug_flag) && (MAJOR(ROOT_DEV) == 0))
+		return;
+#endif
 	/* If this kobj does not belong to a kset,
 	   try to find a parent that does. */
 	if (!top_kobj->kset && top_kobj->parent) {
@@ -260,6 +310,11 @@ void kobject_hotplug(struct kobject *kobj, enum kobject_action action)
 
 	envp [i++] = scratch;
 	scratch += sprintf(scratch, "ACTION=%s", action_string) + 1;
+
+	if (!kobj) {
+		printk("#######[cfyeh-debug] %s(%d) kobj is NULL!\n", __func__, __LINE__);
+		goto exit;
+	}
 
 	kobj_path = kobject_get_path(kobj, GFP_KERNEL);
 	if (!kobj_path)

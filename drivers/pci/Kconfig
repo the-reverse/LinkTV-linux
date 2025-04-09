@@ -47,6 +47,15 @@ config PCI_NAMES
 
 	  When in doubt, say Y.
 
+config PCI_REMOVE_DEVICE_BEFORE_SHOTDOWN
+	bool "Remove PCI device before shotdown"
+	depends on PCI
+	---help---
+	  Say Y if you want the PCI core to remove PCI devices before going to shot
+          down. For some platforms that does not have PCI hardware reset, this feature
+          can make sure all PCI devices can be disabled properly before going to shot 
+          dwon.
+
 config PCI_DEBUG
 	bool "PCI Debugging"
 	depends on PCI && DEBUG_KERNEL

@@ -553,7 +553,7 @@ static int pci_setup_device(struct pci_dev * dev)
 	dev->class = class;
 	class >>= 8;
 
-	pr_debug("PCI: Found %s [%04x/%04x] %06x %02x\n", pci_name(dev),
+	printk("PCI: Found %s [%04x/%04x] %06x %02x\n", pci_name(dev),
 		 dev->vendor, dev->device, class, dev->hdr_type);
 
 	/* "Unknown power state" */
@@ -743,12 +743,21 @@ pci_scan_single_device(struct pci_bus *bus, int devfn)
 {
 	struct pci_dev *dev;
 
+    printk("%s, devfun = %d\n",__FUNCTION__, devfn);
+
+	dev = pci_get_slot(bus, devfn);
+	if (dev) {
+		pci_dev_put(dev);
+		return dev;
+	}
+
 	dev = pci_scan_device(bus, devfn);
 	pci_scan_msi_device(dev);
 
-	if (!dev)
+	if (!dev) {
+	    printk("%s, no dev exists\n",__FUNCTION__);    
 		return NULL;
-	
+	}
 	/* Fix up broken headers */
 	pci_fixup_device(pci_fixup_header, dev);
 
@@ -781,7 +790,8 @@ int __devinit pci_scan_slot(struct pci_bus *bus, int devfn)
 	for (func = 0; func < 8; func++, devfn++) {
 		struct pci_dev *dev;
 
-		dev = pci_scan_single_device(bus, devfn);
+		dev = pci_scan_single_device(bus, devfn);				
+		
 		if (dev) {
 			nr++;
 
@@ -812,7 +822,8 @@ unsigned int __devinit pci_scan_child_bus(struct pci_bus *bus)
 	pr_debug("PCI: Scanning bus %04x:%02x\n", pci_domain_nr(bus), bus->number);
 
 	/* Go find them, Rover! */
-	for (devfn = 0; devfn < 0x100; devfn += 8)
+	//for (devfn = 0; devfn < 0x100; devfn += 8)
+	for (devfn = 0; devfn < 0x18; devfn += 8)
 		pci_scan_slot(bus, devfn);
 
 	/*
@@ -931,6 +942,38 @@ err_out:
 EXPORT_SYMBOL(pci_scan_bus_parented);
 
 #ifdef CONFIG_HOTPLUG
+/**
+ * pci_rescan_bus - scan a PCI bus for devices.
+ * @bus: PCI bus to scan
+ *
+ * Scan a PCI bus and child buses for new devices, adds them,
+ * and enables them.
+ *
+ * Returns the max number of subordinate bus discovered.
+ */
+unsigned int pci_rescan_bus(struct pci_bus *bus)
+{
+	unsigned int max;
+	struct pci_dev *dev;
+
+	max = pci_scan_child_bus(bus);
+	
+    spin_lock(&pci_bus_lock);
+
+	list_for_each_entry(dev, &bus->devices, bus_list)
+		if (dev->hdr_type == PCI_HEADER_TYPE_BRIDGE ||
+		    dev->hdr_type == PCI_HEADER_TYPE_CARDBUS)
+			if (dev->subordinate)
+				pci_bus_size_bridges(dev->subordinate);
+	spin_unlock(&pci_bus_lock);
+
+	pci_bus_assign_resources(bus);
+	pci_enable_bridges(bus);
+	pci_bus_add_devices(bus);
+
+	return max;
+}
+EXPORT_SYMBOL_GPL(pci_rescan_bus);
 EXPORT_SYMBOL(pci_add_new_bus);
 EXPORT_SYMBOL(pci_do_scan_bus);
 EXPORT_SYMBOL(pci_scan_slot);

@@ -836,6 +836,23 @@ extern int fb_new_modelist(struct fb_info *info);
 extern struct fb_info *registered_fb[FB_MAX];
 extern int num_registered_fb;
 
+static inline bool fb_be_math(struct fb_info *info)
+{
+#ifdef CONFIG_FB_FOREIGN_ENDIAN
+#ifdef CONFIG_FB_BIG_ENDIAN
+	return true;
+#else
+	return false;
+#endif /* CONFIG_FB_BIG_ENDIAN */
+#else
+#ifdef __BIG_ENDIAN
+	return true;
+#else
+	return false;
+#endif /* __BIG_ENDIAN */
+#endif /* CONFIG_FB_FOREIGN_ENDIAN */
+}
+
 /* drivers/video/fbsysfs.c */
 extern struct fb_info *framebuffer_alloc(size_t size, struct device *dev);
 extern void framebuffer_release(struct fb_info *info);

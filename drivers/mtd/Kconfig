@@ -253,6 +253,7 @@ config INFTL
 	  permitted to copy, modify and distribute the code as you wish. Just
 	  not use it.
 
+
 source "drivers/mtd/chips/Kconfig"
 
 source "drivers/mtd/maps/Kconfig"

@@ -150,6 +150,48 @@ const char *__bdevname(dev_t dev, char *buffer)
 
 EXPORT_SYMBOL(__bdevname);
 
+// cfyeh +++ : for signature for hdd
+inline void check_rt_signature(struct gendisk *hd, struct block_device *bdev)
+{
+	Sector sect;
+	// no byte swap
+	//unsigned char *data;
+	//unsigned char signature[]={0xBA, 0xBE, 0xFA, 0xCE, 0xDE, 0xAD, 0xBE, 0xEF};
+	// have byte swap
+	unsigned int *data;
+	unsigned int signature[]={0xBABEFACE, 0xDEADBEEF};
+	int i = 0;
+
+	hd->signature = 0;
+
+//	if(!strstr(hd->bus_type, "sata"))
+//		return;
+
+	data = read_dev_sector(bdev, 62, &sect);
+	if (!data)
+		return;
+
+	for(i = 0; i < (sizeof(signature)/sizeof(signature[0])); i++)
+		printk("data[%d] 0x%x signature[%d] 0x%x\n", i, data[i], i, signature[i]);
+
+	for(i = 0; i < (sizeof(signature)/sizeof(signature[0])); i++)
+	{
+//		printk("data[%d] 0x%x signature[%d] 0x%x\n", i, data[i], i, signature[i]);
+		if(data[i] != signature[i])
+		{
+			hd->signature = 0;
+			break;
+		}
+		else
+			hd->signature = 1;
+	}
+
+//	printk(" hd->signature %d\n", hd->signature);
+	put_dev_sector(sect);
+	return;
+}
+// cfyeh --- : for signature for hdd
+
 static struct parsed_partitions *
 check_partition(struct gendisk *hd, struct block_device *bdev)
 {
@@ -178,10 +220,18 @@ check_partition(struct gendisk *hd, struct block_device *bdev)
 		memset(&state->parts, 0, sizeof(state->parts));
 		res = check_part[i++](state, bdev);
 	}
+
+	// cfyeh +++ : for signature for hdd
+	if(((res > 0) && (state->parts[1].from > 62)) || !res)
+		check_rt_signature(hd, bdev);
+	// cfyeh --- : for signature for hdd
+
 	if (res > 0)
 		return state;
-	if (!res)
+	if (!res) {
+		hd->part_num = 0;
 		printk(" unknown partition table\n");
+	}
 	else if (warn_no_part)
 		printk(" unable to read partition table\n");
 	kfree(state);
@@ -282,6 +332,7 @@ void delete_partition(struct gendisk *disk, int part)
 	p->start_sect = 0;
 	p->nr_sects = 0;
 	p->reads = p->writes = p->read_sectors = p->write_sectors = 0;
+	devfs_remove("%s%d", disk->disk_name, part);
 	devfs_remove("%s/part%d", disk->devfs_name, part);
 	kobject_unregister(&p->kobj);
 }
@@ -289,7 +340,8 @@ void delete_partition(struct gendisk *disk, int part)
 void add_partition(struct gendisk *disk, int part, sector_t start, sector_t len)
 {
 	struct hd_struct *p;
-
+	char part_disc[64], symlink[16];
+	
 	p = kmalloc(sizeof(*p), GFP_KERNEL);
 	if (!p)
 		return;
@@ -311,7 +363,47 @@ void add_partition(struct gendisk *disk, int part, sector_t start, sector_t len)
 	p->kobj.ktype = &ktype_part;
 	kobject_register(&p->kobj);
 	disk->part[part-1] = p;
+
+	sprintf(symlink, "%s%d", disk->disk_name, part);
+	sprintf(part_disc, "%s/part%d", disk->devfs_name, part);
+	devfs_mk_symlink(symlink, part_disc);
 }
+
+/*  2009/06/15 cfyeh : partiton serial */
+void add_partition_for_part_serial(struct gendisk *disk, int part, sector_t start, sector_t len, int part_serial, int is_efi)
+{
+	struct hd_struct *p;
+	char part_disc[64], symlink[16];
+	
+	p = kmalloc(sizeof(*p), GFP_KERNEL);
+	if (!p)
+		return;
+	
+	memset(p, 0, sizeof(*p));
+	p->start_sect = start;
+	p->nr_sects = len;
+	p->partno = part;
+	p->part_serial = part_serial; /*  2009/06/15 cfyeh : partiton serial */
+	p->is_efi_system_partition = is_efi;
+
+	devfs_mk_bdev(MKDEV(disk->major, disk->first_minor + part),
+			S_IFBLK|S_IRUSR|S_IWUSR,
+			"%s/part%d", disk->devfs_name, part);
+
+	if (isdigit(disk->kobj.name[strlen(disk->kobj.name)-1]))
+		snprintf(p->kobj.name,KOBJ_NAME_LEN,"%sp%d",disk->kobj.name,part);
+	else
+		snprintf(p->kobj.name,KOBJ_NAME_LEN,"%s%d",disk->kobj.name,part);
+	p->kobj.parent = &disk->kobj;
+	p->kobj.ktype = &ktype_part;
+	kobject_register(&p->kobj);
+	disk->part[part-1] = p;
+
+	sprintf(symlink, "%s%d", disk->disk_name, part);
+	sprintf(part_disc, "%s/part%d", disk->devfs_name, part);
+	devfs_mk_symlink(symlink, part_disc);
+}
+/*  2009/06/15 cfyeh : partiton serial */
 
 static void disk_sysfs_symlinks(struct gendisk *disk)
 {
@@ -337,13 +429,13 @@ void register_disk(struct gendisk *disk)
 	if ((err = kobject_add(&disk->kobj)))
 		return;
 	disk_sysfs_symlinks(disk);
-	kobject_hotplug(&disk->kobj, KOBJ_ADD);
+	//kobject_hotplug(&disk->kobj, KOBJ_ADD); // commented out by cfyeh 2009/10/22
 
 	/* No minors to use for partitions */
 	if (disk->minors == 1) {
 		if (disk->devfs_name[0] != '\0')
 			devfs_add_disk(disk);
-		return;
+		goto out;
 	}
 
 	/* always add handle for the whole disk */
@@ -351,22 +443,26 @@ void register_disk(struct gendisk *disk)
 
 	/* No such device (e.g., media were just removed) */
 	if (!get_capacity(disk))
-		return;
+		goto out;
 
 	bdev = bdget_disk(disk, 0);
 	if (!bdev)
-		return;
+		goto out;
 
 	bdev->bd_invalidated = 1;
 	if (blkdev_get(bdev, FMODE_READ, 0) < 0)
-		return;
+		goto out;
 	blkdev_put(bdev);
+
+out:
+	kobject_hotplug(&disk->kobj, KOBJ_ADD); // add by cfyeh 2009/10/22
 }
 
 int rescan_partitions(struct gendisk *disk, struct block_device *bdev)
 {
 	struct parsed_partitions *state;
 	int p, res;
+	int num = 0; /*  2007/05/23 cfyeh : partiton number */
 
 	if (bdev->bd_part_count)
 		return -EBUSY;
@@ -380,17 +476,48 @@ int rescan_partitions(struct gendisk *disk, struct block_device *bdev)
 		disk->fops->revalidate_disk(disk);
 	if (!get_capacity(disk) || !(state = check_partition(disk, bdev)))
 		return 0;
+
+/*  2007/05/24 cfyeh + : partiton number */
+	for (p = 1; p < state->limit; p++) {
+		sector_t size = state->parts[p].size;
+		if (!size)
+			continue;
+		num++;
+		state->parts[p].part_serial = num; /*  2009/06/15 cfyeh : partiton serial */
+
+		// add to know which partition is a extended partition
+		// by cfyeh 2007/11/13 +
+		if(state->parts[p].is_part_extended == 1)
+		{
+			disk->part_extended = p;
+/*  2009/06/15 cfyeh : partiton extended serial */
+			disk->part_extended_serial = num;
+/*  2009/06/15 cfyeh : partiton extended serial */
+		}
+		// by cfyeh 2007/11/13 -
+	}
+	disk->part_num = num;
+/*  2007/05/24 cfyeh - : partiton number */
+
 	for (p = 1; p < state->limit; p++) {
 		sector_t size = state->parts[p].size;
 		sector_t from = state->parts[p].from;
 		if (!size)
 			continue;
+/*  2009/06/15 cfyeh : partiton serial */
+#if 0
 		add_partition(disk, p, from, size);
+#else
+		add_partition_for_part_serial(disk, p, from, size, state->parts[p].part_serial, state->parts[p].is_efi_system_partition);
+#endif
+/*  2009/06/15 cfyeh : partiton serial */
+
 #ifdef CONFIG_BLK_DEV_MD
 		if (state->parts[p].flags)
 			md_autodetect_dev(bdev->bd_dev+p);
 #endif
 	}
+
 	kfree(state);
 	return 0;
 }
@@ -442,6 +569,5 @@ void del_gendisk(struct gendisk *disk)
 		sysfs_remove_link(&disk->driverfs_dev->kobj, "block");
 		put_device(disk->driverfs_dev);
 	}
-	kobject_hotplug(&disk->kobj, KOBJ_REMOVE);
 	kobject_del(&disk->kobj);
 }

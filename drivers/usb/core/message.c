@@ -3,14 +3,11 @@
  */
 
 #include <linux/config.h>
-
-#ifdef CONFIG_USB_DEBUG
-	#define DEBUG
-#else
-	#undef DEBUG
-#endif
-
+#ifndef CONFIG_REALTEK_VENUS_USB	//cfyeh+ 2005/11/07
 #include <linux/pci.h>	/* for scatterlist macros */
+#else
+#include <linux/dmapool.h>
+#endif /* CONFIG_REALTEK_VENUS_USB */	//cfyeh+ 2005/11/07
 #include <linux/usb.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -20,6 +17,7 @@
 #include <linux/ctype.h>
 #include <linux/device.h>
 #include <asm/byteorder.h>
+#include <linux/kobject_uevent.h> // for send a hotplug signal for usb unknown device
 
 #include "hcd.h"	/* for usbcore internals */
 #include "usb.h"
@@ -30,20 +28,16 @@ static void usb_api_blocking_completion(struct urb *urb, struct pt_regs *regs)
 }
 
 
-static void timeout_kill(unsigned long data)
-{
-	struct urb	*urb = (struct urb *) data;
-
-	usb_unlink_urb(urb);
-}
-
-// Starts urb and waits for completion or timeout
-// note that this call is NOT interruptible, while
-// many device driver i/o requests should be interruptible
-static int usb_start_wait_urb(struct urb *urb, int timeout, int* actual_length)
+/*
+ * Starts urb and waits for completion or timeout. Note that this call
+ * is NOT interruptible. Many device driver i/o requests should be
+ * interruptible and therefore these drivers should implement their
+ * own interruptible routines.
+ */
+static int usb_start_wait_urb(struct urb *urb, int timeout, int *actual_length)
 { 
 	struct completion	done;
-	struct timer_list	timer;
+	unsigned long		expire;
 	int			status;
 
 	init_completion(&done); 	
@@ -51,39 +45,28 @@ static int usb_start_wait_urb(struct urb *urb, int timeout, int* actual_length)
 	urb->transfer_flags |= URB_ASYNC_UNLINK;
 	urb->actual_length = 0;
 	status = usb_submit_urb(urb, GFP_NOIO);
+	if (unlikely(status))
+		goto out;
 
-	if (status == 0) {
-		if (timeout > 0) {
-			init_timer(&timer);
-			timer.expires = jiffies + msecs_to_jiffies(timeout);
-			timer.data = (unsigned long)urb;
-			timer.function = timeout_kill;
-			/* grr.  timeout _should_ include submit delays. */
-			add_timer(&timer);
-		}
-		wait_for_completion(&done);
+	expire = timeout ? msecs_to_jiffies(timeout) : MAX_SCHEDULE_TIMEOUT;
+	if (!wait_for_completion_timeout(&done, expire)) {
+
+		dev_dbg(&urb->dev->dev,
+			"%s timed out on ep%d%s len=%d/%d\n",
+			current->comm,
+			usb_pipeendpoint(urb->pipe),
+			usb_pipein(urb->pipe) ? "in" : "out",
+			urb->actual_length,
+			urb->transfer_buffer_length);
+
+		usb_kill_urb(urb);
+		status = urb->status == -ENOENT ? -ETIMEDOUT : urb->status;
+	} else
 		status = urb->status;
-		/* note:  HCDs return ETIMEDOUT for other reasons too */
-		if (status == -ECONNRESET) {
-			dev_dbg(&urb->dev->dev,
-				"%s timed out on ep%d%s len=%d/%d\n",
-				current->comm,
-				usb_pipeendpoint(urb->pipe),
-				usb_pipein(urb->pipe) ? "in" : "out",
-				urb->actual_length,
-				urb->transfer_buffer_length
-				);
-			if (urb->actual_length > 0)
-				status = 0;
-			else
-				status = -ETIMEDOUT;
-		}
-		if (timeout > 0)
-			del_timer_sync(&timer);
-	}
-
+out:
 	if (actual_length)
 		*actual_length = urb->actual_length;
+
 	usb_free_urb(urb);
 	return status;
 }
@@ -217,7 +200,9 @@ static void sg_clean (struct usb_sg_request *io)
 		kfree (io->urbs);
 		io->urbs = NULL;
 	}
+#ifndef CONFIG_REALTEK_VENUS_USB	//cfyeh+ 2005/11/07
 	if (io->dev->dev.dma_mask != NULL)
+#endif /* CONFIG_REALTEK_VENUS_USB */	//cfyeh+ 2005/11/07
 		usb_buffer_unmap_sg (io->dev, io->pipe, io->sg, io->nents);
 	io->dev = NULL;
 }
@@ -266,7 +251,9 @@ static void sg_complete (struct urb *urb, struct pt_regs *regs)
 				continue;
 			if (found) {
 				status = usb_unlink_urb (io->urbs [i]);
-				if (status != -EINPROGRESS && status != -EBUSY)
+				if (status != -EINPROGRESS
+						&& status != -ENODEV
+						&& status != -EBUSY)
 					dev_err (&io->dev->dev,
 						"%s, unlink --> %d\n",
 						__FUNCTION__, status);
@@ -342,7 +329,12 @@ int usb_sg_init (
 	/* not all host controllers use DMA (like the mainstream pci ones);
 	 * they can use PIO (sl811) or be software over another transport.
 	 */
+
+#ifndef CONFIG_REALTEK_VENUS_USB	//cfyeh+ 2005/11/07
 	dma = (dev->dev.dma_mask != NULL);
+#else
+	dma = 1;
+#endif /* CONFIG_REALTEK_VENUS_USB */	//cfyeh+ 2005/11/07
 	if (dma)
 		io->entries = usb_buffer_map_sg (dev, pipe, sg, nents);
 	else
@@ -722,7 +714,11 @@ int usb_string(struct usb_device *dev, int index, char *buf, size_t size)
 	if (size <= 0 || !buf || !index)
 		return -EINVAL;
 	buf[0] = 0;
+#ifdef USB_512B_ALIGNMENT
+	tbuf = kmalloc(USB_512B_ALIGNMENT_SIZE, GFP_KERNEL);
+#else
 	tbuf = kmalloc(256, GFP_KERNEL);
+#endif /* USB_512B_ALIGNMENT */
 	if (!tbuf)
 		return -ENOMEM;
 
@@ -770,6 +766,30 @@ int usb_string(struct usb_device *dev, int index, char *buf, size_t size)
 	kfree(tbuf);
 	return err;
 }
+/**
+ * usb_cache_string - read a string descriptor and cache it for later use
+ * @udev: the device whose string descriptor is being read
+ * @index: the descriptor index
+ *
+ * Returns a pointer to a kmalloc'ed buffer containing the descriptor string,
+ * or NULL if the index is 0 or the string could not be read.
+ */
+char *usb_cache_string(struct usb_device *udev, int index)
+{
+	char *buf;
+	char *smallbuf = NULL;
+	int len;
+
+	if (index > 0 && (buf = kmalloc(256, GFP_KERNEL)) != NULL) {
+		if ((len = usb_string(udev, index, buf, 256)) > 0) {
+			if ((smallbuf = kmalloc(++len, GFP_KERNEL)) == NULL)
+				return buf;
+			memcpy(smallbuf, buf, len);
+		}
+		kfree(buf);
+	}
+	return smallbuf;
+}
 
 /*
  * usb_get_device_descriptor - (re)reads the device descriptor (usbcore)
@@ -799,7 +819,11 @@ int usb_get_device_descriptor(struct usb_device *dev, unsigned int size)
 
 	if (size > sizeof(*desc))
 		return -EINVAL;
+#ifdef USB_512B_ALIGNMENT
+	desc = kmalloc(USB_512B_ALIGNMENT_SIZE, GFP_NOIO);
+#else
 	desc = kmalloc(sizeof(*desc), GFP_NOIO);
+#endif /* USB_512B_ALIGNMENT */
 	if (!desc)
 		return -ENOMEM;
 
@@ -990,8 +1014,6 @@ void usb_disable_device(struct usb_device *dev, int skip_ep0)
 			dev_dbg (&dev->dev, "unregistering interface %s\n",
 				interface->dev.bus_id);
 			usb_remove_sysfs_intf_files(interface);
-			kfree(interface->cur_altsetting->string);
-			interface->cur_altsetting->string = NULL;
 			device_del (&interface->dev);
 		}
 
@@ -1253,6 +1275,45 @@ static void release_interface(struct device *dev)
 	kfree(intf);
 }
 
+// +++ cyhuang (2011/06/22) 
+/* Add dump device and interface info for no support device. */
+static void rtk_usb_dump_unknown_device_info(struct usb_device *dev,struct usb_interface *interface)
+{
+    __u8 bDeviceClass,bDeviceSubClass,bDeviceProtocol,bInterfaceClass,bInterfaceSubClass,bInterfaceProtocol;
+    __le16 idVendor, idProduct;
+    struct usb_host_interface *intf;
+    
+    if (dev == NULL)
+        return;
+    
+    intf = interface->cur_altsetting;
+    // intf = dev->actconfig;
+    
+    idVendor = le16_to_cpu(dev->descriptor.idVendor);
+    idProduct = le16_to_cpu(dev->descriptor.idProduct);
+    bDeviceClass = dev->descriptor.bDeviceClass;
+    bDeviceSubClass = dev->descriptor.bDeviceSubClass;
+    bDeviceProtocol = dev->descriptor.bDeviceProtocol;
+    
+    printk("Device Descriptor :\n");
+    printk("idVendor = 0x%x , idProduct = 0x%x\n",idProduct,idProduct);
+    printk("bDeviceClass = 0x%x , bDeviceSubClass = 0x%x , bDeviceProtocol = 0x%x\n",bDeviceClass,bDeviceSubClass,bDeviceProtocol);
+    
+    if (intf)
+    {            
+        bInterfaceClass = intf->desc.bInterfaceClass;
+        bInterfaceSubClass = intf->desc.bInterfaceSubClass;
+        bInterfaceProtocol = intf->desc.bInterfaceProtocol;
+        
+        printk("Device Interface Descriptor :\n");
+        printk("bInterfaceClass = 0x%x , bInterfaceSubClass = 0x%x , bInterfaceProtocol = 0x%x\n",bInterfaceClass,bInterfaceSubClass,bInterfaceProtocol);
+    }                    
+}
+// +++ cyhuang (2011/06/22) 
+
+#ifdef USB_WARNING_WHEN_DEVICE_NOT_SUPPORT
+int usb_probe_match_id = 0;
+#endif /* USB_WARNING_WHEN_DEVICE_NOT_SUPPORT */
 /*
  * usb_set_configuration - Makes a particular device setting be current
  * @dev: the device whose configuration is being updated
@@ -1398,13 +1459,10 @@ free_interfaces:
 		}
 		kfree(new_interfaces);
 
-		if ((cp->desc.iConfiguration) &&
-		    (cp->string == NULL)) {
-			cp->string = kmalloc(256, GFP_KERNEL);
-			if (cp->string)
-				usb_string(dev, cp->desc.iConfiguration, cp->string, 256);
-		}
-
+		if (cp->string == NULL)
+			cp->string = usb_cache_string(dev,
+					cp->desc.iConfiguration);
+		
 		/* Now that all the interfaces are set up, register them
 		 * to trigger binding of drivers to interfaces.  probe()
 		 * routines may install different altsettings and may
@@ -1413,27 +1471,41 @@ free_interfaces:
 		 */
 		for (i = 0; i < nintf; ++i) {
 			struct usb_interface *intf = cp->interface[i];
-			struct usb_interface_descriptor *desc;
+			struct usb_host_interface *alt = intf->cur_altsetting;
 
-			desc = &intf->altsetting [0].desc;
 			dev_dbg (&dev->dev,
 				"adding %s (config #%d, interface %d)\n",
 				intf->dev.bus_id, configuration,
-				desc->bInterfaceNumber);
+				alt->desc.bInterfaceNumber);
+			
+#ifdef USB_WARNING_WHEN_DEVICE_NOT_SUPPORT
+			usb_probe_match_id = 0;
+#endif /* USB_WARNING_WHEN_DEVICE_NOT_SUPPORT */
 			ret = device_add (&intf->dev);
+#ifdef USB_WARNING_WHEN_DEVICE_NOT_SUPPORT
+			if(!usb_probe_match_id)
+			{
+				kobject_hotplug(&intf->dev.kobj, KOBJ_UNKNOWN);
+				printk ("###################################################################\n"); //cfyeh-debug
+				printk ("[cfyeh-test] %s(%d)\n", __func__, __LINE__); //cfyeh-debug
+				printk ("Don't support this usb device or don't insert correct module yet!!!\n"); //cfyeh-debug
+				printk ("bus_id %s (config #%d, interface %d)\n",
+					intf->dev.bus_id, configuration,
+					alt->desc.bInterfaceNumber); //cfyeh-debug
+				
+				// +++ cyhuang (2011/06/22) 	
+				rtk_usb_dump_unknown_device_info(dev,intf);	
+				// +++ cyhuang (2011/06/22) 
+				printk ("###################################################################\n"); //cfyeh-debug
+			}
+#endif /* USB_WARNING_WHEN_DEVICE_NOT_SUPPORT */
+
 			if (ret != 0) {
 				dev_err(&dev->dev,
 					"device_add(%s) --> %d\n",
 					intf->dev.bus_id,
 					ret);
 				continue;
-			}
-			if ((intf->cur_altsetting->desc.iInterface) &&
-			    (intf->cur_altsetting->string == NULL)) {
-				intf->cur_altsetting->string = kmalloc(256, GFP_KERNEL);
-				if (intf->cur_altsetting->string)
-					usb_string(dev, intf->cur_altsetting->desc.iInterface,
-						   intf->cur_altsetting->string, 256);
 			}
 			usb_create_sysfs_intf_files (intf);
 		}

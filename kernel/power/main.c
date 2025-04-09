@@ -15,9 +15,19 @@
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/pm.h>
-
+#include <venus.h>
+#include <platform.h>
+#include <asm/io.h>
 
 #include "power.h"
+
+void free_all_memory(void);
+#ifdef CONFIG_REALTEK_SUPPORT_BOOT_AV
+int DVR_zone_disable(void);
+int DVR_zone_enable(void);
+
+extern int reserveDVR;
+#endif
 
 DECLARE_MUTEX(pm_sem);
 
@@ -35,7 +45,6 @@ void pm_set_ops(struct pm_ops * ops)
 	pm_ops = ops;
 	up(&pm_sem);
 }
-
 
 /**
  *	suspend_prepare - Do prep work before entering low-power state.
@@ -64,6 +73,13 @@ static int suspend_prepare(suspend_state_t state)
 		if ((error = pm_ops->prepare(state)))
 			goto Thaw;
 	}
+	free_all_memory();
+#ifdef CONFIG_REALTEK_SUPPORT_BOOT_AV
+	if (DVR_zone_disable()) {
+		printk("reserve DVR zone...\n");
+		reserveDVR = 1;
+	}
+#endif
 
 	if ((error = device_suspend(PMSG_SUSPEND))) {
 		printk(KERN_ERR "Some devices failed to suspend\n");
@@ -112,8 +128,21 @@ static void suspend_finish(suspend_state_t state)
 	device_resume();
 	if (pm_ops && pm_ops->finish)
 		pm_ops->finish(state);
+/* For Venus and Neptune, resuming may fail. Therefore, use watchdog timeout
+ * to prevent from this. */
+	if(is_venus_cpu()||is_neptune_cpu()) {
+		outl(0x1, VENUS_MIS_TCWTR);
+		udelay(10);
+		outl(0x1E0000A5, VENUS_MIS_TCWCR);
+	}
 	thaw_processes();
 	pm_restore_console();
+#ifdef CONFIG_REALTEK_SUPPORT_BOOT_AV
+	if (DVR_zone_enable()) {
+		printk("release DVR zone...\n");
+		reserveDVR = 0;
+	}
+#endif
 }
 
 
@@ -220,6 +249,9 @@ static ssize_t state_show(struct subsystem * subsys, char * buf)
 		if (pm_states[i])
 			s += sprintf(s,"%s ",pm_states[i]);
 	}
+#ifdef CONFIG_PM_SLEEP_REBOOT
+	s += sprintf(s,"reboot ");
+#endif
 	s += sprintf(s,"\n");
 	return (s - buf);
 }
@@ -241,8 +273,22 @@ static ssize_t state_store(struct subsystem * subsys, const char * buf, size_t n
 	}
 	if (*s)
 		error = enter_state(state);
-	else
-		error = -EINVAL;
+	else {
+#ifdef CONFIG_PM_SLEEP_REBOOT
+/*
+User can choose the resuming method.
+	echo mem > /sys/power/state: normal resuming
+	echo reboot > /sys/power/state: use reboot instead because the power of DRAM may be cut off.
+*/
+		if(!strncmp(buf, "reboot", len)) {
+			extern int suspend_options;
+			
+			suspend_options = 1;
+			error = enter_state(PM_SUSPEND_MEM);
+		} else
+#endif
+			error = -EINVAL;
+	}
 	return error ? error : n;
 }
 

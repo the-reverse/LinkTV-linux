@@ -27,8 +27,14 @@
  */
 
 /*-------------------------------------------------------------------------*/
+#ifdef CONFIG_REALTEK_VENUS_USB	//cfyeh+ 2005/11/07
+//cfyeh+ 2005/10/05
+//for usb phy 
+#include <rl5829.h>	//cfyeh
+#include <rl5829_reg.h>	//cfyeh
+#endif /* CONFIG_REALTEK_VENUS_USB */	//cfyeh- 2005/11/07
 
-#ifdef	CONFIG_PM
+#if     defined(CONFIG_PM) || defined(CONFIG_REALTEK_VENUS_USB) //cfyeh+ 2005/11/07
 
 static int ehci_hub_suspend (struct usb_hcd *hcd)
 {
@@ -67,6 +73,13 @@ static int ehci_hub_suspend (struct usb_hcd *hcd)
 		if (t1 != t2) {
 			ehci_vdbg (ehci, "port %d, %08x -> %08x\n",
 				port + 1, t1, t2);
+			if(is_jupiter_cpu()) {
+				printk("#@# cfyeh-debug %s(%d)\n", __func__, __LINE__);
+				// port 1
+				*(unsigned int volatile *)0xb8013800 = 41;
+				// port 2
+				*(unsigned int volatile *)0xb8013820 = 40;
+			}
 			writel (t2, reg);
 		}
 	}
@@ -93,6 +106,13 @@ static int ehci_hub_resume (struct usb_hcd *hcd)
 	if (time_before (jiffies, ehci->next_statechange))
 		msleep(5);
 	spin_lock_irq (&ehci->lock);
+
+	/* Ideally and we've got a real resume here, and no port's power
+	 * was lost.  (For PCI, that means Vaux was maintained.)  But we
+	 * could instead be restoring a swsusp snapshot -- so that BIOS was
+	 * the last user of the controller, not reset/pm hardware keeping
+	 * state we gave to it.
+	 */
 
 	/* re-init operational registers in case we lost power */
 	if (readl (&ehci->regs->intr_enable) == 0) {
@@ -161,7 +181,7 @@ static int ehci_hub_resume (struct usb_hcd *hcd)
 #define ehci_hub_suspend	NULL
 #define ehci_hub_resume		NULL
 
-#endif	/* CONFIG_PM */
+#endif	/* CONFIG_PM || CONFIG_REALTEK_VENUS_USB */
 
 /*-------------------------------------------------------------------------*/
 
@@ -177,6 +197,14 @@ static int check_reset_complete (
 
 	/* if reset finished and it's still not enabled -- handoff */
 	if (!(port_status & PORT_PE)) {
+#if 0
+		// hack for memorette usb device, which port_status will be 0x1100 when plug in/out to fast
+		if (!(port_status & (3<<10))) {
+			printk("#######[cfyeh-debug] %s(%d) hack for memorette usb device port_status 0x%x\n", __func__, __LINE__, port_status);
+			ehci->reset_done [index] = 0;
+			return port_status;
+		}
+#endif
 
 		/* with integrated TT, there's nobody to hand it to! */
 		if (ehci_is_TDI(ehci)) {
@@ -295,7 +323,9 @@ ehci_hub_descriptor (
 /*-------------------------------------------------------------------------*/
 
 #define	PORT_WAKE_BITS 	(PORT_WKOC_E|PORT_WKDISC_E|PORT_WKCONN_E)
-
+#ifdef CONFIG_REALTEK_VENUS_USB_1261 //cfyeh+ for LS device 2005/12/07
+static int LS_device = 0;
+#endif /* CONFIG_REALTEK_VENUS_USB_1261 *///cfyeh- 2005/12/07
 static int ehci_hub_control (
 	struct usb_hcd	*hcd,
 	u16		typeReq,
@@ -479,8 +509,46 @@ static int ehci_hub_control (
 	if (status & ~0xffff)	/* only if wPortChange is interesting */
 #endif
 		dbg_port (ehci, "GetStatus", wIndex + 1, temp);
+		//if(temp != readl (&ehci->regs->port_status [wIndex])) {
+		if(!(temp & PORT_CONNECT) && (readl (&ehci->regs->port_status [wIndex]) & PORT_CONNECT)) {
+			printk("#######[cfyeh-debug] %s(%d) readl (&ehci->regs->port_status [%d]) != temp\n", __func__, __LINE__, wIndex);
+			dbg_port (ehci, "GetStatus", wIndex + 1, readl (&ehci->regs->port_status [wIndex]));
+			writel (temp | PORT_OWNER,
+				&ehci->regs->port_status [wIndex]);
+		}
+
+#if 0
+		// hack for memorette usb device, which port_status will be 0x1100 when plug in/out to fast
+		if(!(is_venus_cpu() || is_neptune_cpu()))
+		if ((temp & PORT_RESET) && !(temp & PORT_CONNECT)) {
+			printk("#######[cfyeh-debug] %s(%d) hack for memorette usb device port_status 0x%x\n", __func__, __LINE__, temp);
+			writel (temp & ~PORT_POWER,
+				&ehci->regs->port_status [wIndex]);
+			msleep(100);
+			writel (temp | PORT_POWER,
+				&ehci->regs->port_status [wIndex]);
+		}
+#endif
+
 		// we "know" this alignment is good, caller used kmalloc()...
 		*((__le32 *) buf) = cpu_to_le32 (status);
+#ifdef CONFIG_REALTEK_VENUS_USB_1261 //cfyeh+ for LS device 2005/12/07
+		if(is_venus_cpu())
+		{
+			if(LS_device==1)
+			{
+				LS_device=0;
+			}
+			else
+			{
+				//cfyeh+ 2005/12/07
+				//for test low speed device
+				//to write VENUS_USB_HOST_SELF_LOOP_BACK bit[11:10]=00
+				outl(inl(VENUS_USB_HOST_SELF_LOOP_BACK) & ~(u32)(0x3<<10), VENUS_USB_HOST_SELF_LOOP_BACK);
+				//cfyeh- 2005/12/07
+			}
+		}
+#endif /* CONFIG_REALTEK_VENUS_USB_1261 */   //cfyeh+ 2005/12/07
 		break;
 	case SetHubFeature:
 		switch (wValue) {
@@ -507,6 +575,13 @@ static int ehci_hub_control (
 				goto error;
 			if (hcd->remote_wakeup)
 				temp |= PORT_WAKE_BITS;
+			if(is_jupiter_cpu()) {
+				printk("#@# cfyeh-debug %s(%d)\n", __func__, __LINE__);
+				// port 1
+				*(unsigned int volatile *)0xb8013800 = 41;
+				// port 2
+				*(unsigned int volatile *)0xb8013820 = 40;
+			}
 			writel (temp | PORT_SUSPEND,
 				&ehci->regs->port_status [wIndex]);
 			break;
@@ -529,6 +604,17 @@ static int ehci_hub_control (
 					"port %d low speed --> companion\n",
 					wIndex + 1);
 				temp |= PORT_OWNER;
+#ifdef CONFIG_REALTEK_VENUS_USB_1261 //cfyeh+ for LS device 2005/12/07
+				if(is_venus_cpu())
+				{
+					LS_device = 1;
+					//cfyeh+ 2005/12/07
+					//for test low speed device
+					//to write VENUS_USB_HOST_SELF_LOOP_BACK bit[11:10]=01
+					outl((inl(VENUS_USB_HOST_SELF_LOOP_BACK) & ~(u32)(0x3<<10))| (0x1 <<10), VENUS_USB_HOST_SELF_LOOP_BACK);
+					//cfyeh- 2005/12/07
+				}
+#endif /* CONFIG_REALTEK_VENUS_USB_1261 */  //cfyeh+ 2005/12/07
 			} else {
 				ehci_vdbg (ehci, "port %d reset\n", wIndex + 1);
 				temp |= PORT_RESET;

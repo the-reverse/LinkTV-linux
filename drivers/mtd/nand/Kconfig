@@ -203,5 +203,34 @@ config MTD_NAND_DISKONCHIP_BBTWRITE
 	help
 	  The simulator may simulate verious NAND flash chips for the
 	  MTD nand layer.
- 
+
+ config MTD_NAND_RTK
+        bool "Realtek NAND Flash Driver"
+	depends on MTD_NAND	
+        help
+          This is Nand flash driver for Realtek.
+
+ config NAND_MULTI_READ_FOR_CARDREADER
+        bool "Cooperate with card reader to fix share pin bug."
+	depends on MTD_NAND	
+	default n
+        help
+          Cooperate with card reader to fix share pin bug.
+
+
+ config NAND_READ_SKIP_UPDATE_BBT
+        bool "Determine skip updating bbt or not, after reading page error."
+	depends on MTD_NAND	
+	default n
+        help
+          This flag will be set under NAND_MULTI_READ_FOR_CARDREADER .          
+
+ config NAND_BBT_NEW_MECHANISM
+        bool "Using new BBT mechanism."
+	depends on MTD_NAND	
+	default n
+        help
+          This flag will be set to default value . 
+
+
 endmenu

@@ -323,6 +323,7 @@ static int usb_kbd_probe(struct usb_interface *iface,
 	printk(KERN_INFO "input: %s on %s\n", kbd->name, path);
 
 	usb_set_intfdata(iface, kbd);
+	kobject_hotplug(&dev->dev.kobj, KOBJ_USBKBD_UP);
 	return 0;
 }
 
@@ -332,6 +333,7 @@ static void usb_kbd_disconnect(struct usb_interface *intf)
 	
 	usb_set_intfdata(intf, NULL);
 	if (kbd) {
+		kobject_hotplug(&kbd->usbdev->dev.kobj, KOBJ_USBKBD_DOWN);
 		usb_kill_urb(kbd->irq);
 		input_unregister_device(&kbd->dev);
 		usb_kbd_free_mem(interface_to_usbdev(intf), kbd);

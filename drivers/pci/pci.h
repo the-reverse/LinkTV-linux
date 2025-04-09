@@ -46,6 +46,11 @@ extern int pci_msi_quirk;
 extern int pcie_mch_quirk;
 extern struct device_attribute pci_dev_attrs[];
 extern struct class_device_attribute class_device_attr_cpuaffinity;
+#ifdef CONFIG_HOTPLUG
+extern struct bus_attribute pci_bus_attrs[];
+#else
+#define pci_bus_attrs	NULL
+#endif
 
 /**
  * pci_match_one_device - Tell if a PCI device structure has a matching

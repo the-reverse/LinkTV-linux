@@ -29,6 +29,26 @@ enum kobject_action {
 	KOBJ_UMOUNT	= (__force kobject_action_t) 0x05,	/* umount event for block devices */
 	KOBJ_OFFLINE	= (__force kobject_action_t) 0x06,	/* offline event for hotplug devices */
 	KOBJ_ONLINE	= (__force kobject_action_t) 0x07,	/* online event for hotplug devices */
+	KOBJ_OVERCUR	= (__force kobject_action_t) 0x08,	/* over-current event for hotplug devices */
+	KOBJ_TIER	= (__force kobject_action_t) 0x09,	/* tier event for hotplug devices */
+	KOBJ_UNKNOWN	= (__force kobject_action_t) 0x0a,	/* usb unknown device */
+	KOBJ_LINKUP	= (__force kobject_action_t) 0x0b,      /* MII link up event */
+        KOBJ_LINKDOWN	= (__force kobject_action_t) 0x0c,      /* MII link down event */	
+        KOBJ_NET_PBC	= (__force kobject_action_t) 0x0d,      /* MII PBC pressed */	
+        KOBJ_USBAI_UP	= (__force kobject_action_t) 0x0e,      /* MII link down event */	
+        KOBJ_USBAI_DOWN	= (__force kobject_action_t) 0x0f,      /* MII link down event */	
+        KOBJ_USBAO_UP	= (__force kobject_action_t) 0x10,      /* MII link down event */	
+        KOBJ_USBAO_DOWN	= (__force kobject_action_t) 0x11,      /* MII link down event */	
+        KOBJ_USBKBD_UP	= (__force kobject_action_t) 0x12,
+        KOBJ_USBKBD_DOWN	= (__force kobject_action_t) 0x13,
+        KOBJ_USBMICE_UP	= (__force kobject_action_t) 0x14,
+        KOBJ_USBMICE_DOWN	= (__force kobject_action_t) 0x15,
+        KOBJ_SCSI_OFFLINE	= (__force kobject_action_t) 0x16,
+        KOBJ_USB_CABLE_BAD	= (__force kobject_action_t) 0x17,
+        KOBJ_USBVI_UP	= (__force kobject_action_t) 0x18,
+        KOBJ_USBVI_DOWN	= (__force kobject_action_t) 0x19,
+        KOBJ_USBVO_UP	= (__force kobject_action_t) 0x1a,
+        KOBJ_USBVO_DOWN	= (__force kobject_action_t) 0x1b,
 };
 
 

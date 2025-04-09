@@ -31,6 +31,8 @@
 #include <linux/notifier.h>
 #include <linux/init.h>
 
+#define DEBUG_MSG
+ 
 /* How many pages do we try to swap or page in/out together? */
 int page_cluster;
 
@@ -258,7 +260,7 @@ void __pagevec_release(struct pagevec *pvec)
 	release_pages(pvec->pages, pagevec_count(pvec), pvec->cold);
 	pagevec_reinit(pvec);
 }
-
+EXPORT_SYMBOL(__pagevec_release);
 /*
  * pagevec_release() for pages which are known to not be on the LRU
  *
@@ -387,7 +389,7 @@ unsigned pagevec_lookup_tag(struct pagevec *pvec, struct address_space *mapping,
 					nr_pages, pvec->pages);
 	return pagevec_count(pvec);
 }
-
+EXPORT_SYMBOL(pagevec_lookup_tag);
 
 #ifdef CONFIG_SMP
 /*
@@ -483,3 +485,16 @@ void __init swap_setup(void)
 	 */
 	hotcpu_notifier(cpu_swap_callback, 0);
 }
+
+#ifdef DEBUG_MSG
+void print_pagevec_count(void)
+{
+        struct pagevec *pvec = &get_cpu_var(lru_add_pvecs);
+        printk("lru_add_pvecs\t\tcount: %d\n", (int)pvec->nr);
+        pvec = &__get_cpu_var(lru_add_active_pvecs);
+        printk("lru_add_active_pvecs\tcount: %d\n", (int)pvec->nr);
+        put_cpu_var(lru_add_pvecs);
+}
+EXPORT_SYMBOL(print_pagevec_count);
+#endif
+

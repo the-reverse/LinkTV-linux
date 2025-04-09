@@ -74,8 +74,13 @@
 #include <linux/completion.h>
 #include <linux/highmem.h>
 #include <linux/gfp.h>
+#ifdef CONFIG_BLK_DEV_LOOP_DIRECT_IO
+#include <linux/uio.h>
+#define CIFS_MAGIC_NUMBER 0xFF534D42
+#endif
 
 #include <asm/uaccess.h>
+#include <asm/cacheflush.h>
 
 static int max_loop = 8;
 static struct loop_device *loop_dev;
@@ -250,7 +255,11 @@ static int do_lo_send_aops(struct loop_device *lo, struct bio_vec *bvec,
 			memset(kaddr + offset, 0, size);
 			kunmap_atomic(kaddr, KM_USER0);
 		}
+#ifdef CONFIG_REALTEK_PREVENT_DC_ALIAS
+		/* EJ: i don't think we need to do the cache flush here... */
+#else
 		flush_dcache_page(page);
+#endif
 		if (unlikely(aops->commit_write(file, page, offset,
 				offset + size)))
 			goto unlock;
@@ -298,6 +307,27 @@ static inline int __do_lo_send_write(struct file *file,
 		bw = -EIO;
 	return bw;
 }
+
+#ifdef CONFIG_BLK_DEV_LOOP_DIRECT_IO
+/* support direct I/O write
+static int do_lo_send_direct_io(struct loop_device *lo,
+		struct bio_vec *bvec, int bsize, loff_t pos, struct page *page)
+{
+	struct kiocb kiocb;
+	struct iovec local_iov;
+	int retval;
+
+	init_sync_kiocb(&kiocb, lo->lo_backing_file);
+	local_iov.iov_base = page_address(bvec->bv_page) + bvec->bv_offset;
+	local_iov.iov_len = bvec->bv_len;
+	retval = generic_file_direct_IO(WRITE, &kiocb, &local_iov, pos, 1);
+	if (retval > 0 && !is_sync_kiocb(&kiocb))
+		retval = wait_on_sync_kiocb(&kiocb);
+
+	return (retval < 0)? retval: 0;
+}
+*/
+#endif
 
 /**
  * do_lo_send_direct_write - helper for writing data to a loop device
@@ -367,7 +397,33 @@ static int lo_send(struct loop_device *lo, struct bio *bio, int bsize,
 			do_lo_send = do_lo_send_write;
 		}
 	}
+#ifdef CONFIG_BLK_DEV_LOOP_DIRECT_IO
+/* support direct I/O write
+	// check if we can use direct I/O to accelerate the loading...
+	if ((lo->lo_device->bd_block_size >= lo->lo_backing_super->s_blocksize) 
+			&& (lo->lo_backing_file->f_mapping->a_ops->direct_IO)
+			&& (lo->transfer == transfer_none)) {
+		do_lo_send = do_lo_send_direct_io;
+	} else {
+		do_lo_send = do_lo_send_aops;
+		if (!(lo->lo_flags & LO_FLAGS_USE_AOPS)) {
+			do_lo_send = do_lo_send_direct_write;
+			if (lo->transfer != transfer_none) {
+				page = alloc_page(GFP_NOIO | __GFP_HIGHMEM);
+				if (unlikely(!page))
+					goto fail;
+				kmap(page);
+				do_lo_send = do_lo_send_write;
+			}
+		}
+	}
+*/
+#endif
 	bio_for_each_segment(bvec, bio, i) {
+#ifdef CONFIG_REALTEK_PREVENT_DC_ALIAS
+		/* EJ: prevent the virtual alias of the source page... */
+		flush_dcache_page_alias(bvec->bv_page);
+#endif
 		ret = do_lo_send(lo, bvec, bsize, pos, page);
 		if (ret < 0)
 			break;
@@ -406,6 +462,9 @@ lo_read_actor(read_descriptor_t *desc, struct page *page,
 	if (size > count)
 		size = count;
 
+#ifdef CONFIG_REALTEK_PREVENT_DC_ALIAS
+	/* EJ: i think the p->page should be clean, so we don't do the cache flush here... */
+#endif
 	if (lo_do_transfer(lo, READ, page, offset, p->page, p->offset, size, IV)) {
 		size = 0;
 		printk(KERN_ERR "loop: transfer error block %ld\n",
@@ -414,12 +473,37 @@ lo_read_actor(read_descriptor_t *desc, struct page *page,
 	}
 
 	flush_dcache_page(p->page);
+	if (!cpu_has_dc_aliases)
+		__flush_dcache_page(p->page);
 
 	desc->count = count - size;
 	desc->written += size;
 	p->offset += size;
 	return size;
 }
+
+#ifdef CONFIG_BLK_DEV_LOOP_DIRECT_IO
+static int
+do_lo_receive_direct_io(struct loop_device *lo,
+	      struct bio_vec *bvec, int bsize, loff_t pos)
+{
+	struct kiocb kiocb;
+	struct iovec local_iov;
+	struct file *file;
+	int retval;
+
+	file = lo->lo_backing_file;
+	init_sync_kiocb(&kiocb, file);
+	local_iov.iov_base = page_address(bvec->bv_page) + bvec->bv_offset;
+	local_iov.iov_len = bvec->bv_len;
+//	printk(" @@@ DIRECT READ1: %d %x\n", bvec->bv_len, page_address(bvec->bv_page));
+	retval = generic_file_direct_IO(READ, &kiocb, &local_iov, pos, 1);
+	if (retval > 0 && !is_sync_kiocb(&kiocb))
+		retval = wait_on_sync_kiocb(&kiocb);
+
+	return (retval < 0)? retval: 0;
+}
+#endif
 
 static int
 do_lo_receive(struct loop_device *lo,
@@ -445,12 +529,71 @@ lo_receive(struct loop_device *lo, struct bio *bio, int bsize, loff_t pos)
 	struct bio_vec *bvec;
 	int i, ret = 0;
 
+#ifdef CONFIG_BLK_DEV_LOOP_DIRECT_IO
+//	printk(" @@@ BIO READ: %d %d %d %d \n", bio->bi_size, bio->bi_vcnt, 
+//			lo->lo_device->bd_block_size, lo->lo_backing_super->s_blocksize);
+	// check if we can use direct I/O to accelerate the loading...
+	if ((bio->bi_vcnt > 1)
+//		&& (lo->lo_flags & LO_FLAGS_READ_ONLY)
+//		&& (lo->lo_device->bd_block_size >= lo->lo_backing_super->s_blocksize)
+		&& (lo->lo_backing_file->f_mapping->a_ops->direct_IO)
+		&& (lo->transfer == transfer_none)) {
+		struct bio_vec bvec_tmp = {0};
+		unsigned blocksize_mask = (1 << lo->lo_backing_super->s_blocksize_bits) - 1;
+
+		bio_for_each_segment(bvec, bio, i) {
+			if (!PageDVR(bvec->bv_page))
+				printk("<<Warning by EJ>> NOT PLI memory in loop device...\n");
+//				BUG();
+
+			if (bvec_tmp.bv_page == 0) {
+				bvec_tmp = *bvec;
+				continue;
+			}
+
+			if ((unsigned int)page_address(bvec_tmp.bv_page)+bvec_tmp.bv_offset+bvec_tmp.bv_len == 
+			    (unsigned int)page_address(bvec->bv_page)+bvec->bv_offset) {
+				bvec_tmp.bv_len += bvec->bv_len;
+				continue;
+			}
+
+			if (!(bvec_tmp.bv_len & blocksize_mask)) {
+				if ((lo->lo_backing_super->s_magic != CIFS_MAGIC_NUMBER) && 
+						((bvec_tmp.bv_offset & blocksize_mask) || (pos & blocksize_mask)))
+					ret = do_lo_receive(lo, &bvec_tmp, bsize, pos);
+				else
+					ret = do_lo_receive_direct_io(lo, &bvec_tmp, bsize, pos);
+			} else
+				ret = do_lo_receive(lo, &bvec_tmp, bsize, pos);
+			if (ret < 0)
+				break;
+			pos += bvec_tmp.bv_len;
+			bvec_tmp = *bvec;
+		}
+		if (!(bvec_tmp.bv_len & blocksize_mask)) {
+			if ((lo->lo_backing_super->s_magic != CIFS_MAGIC_NUMBER) && 
+					((bvec_tmp.bv_offset & blocksize_mask) || (pos & blocksize_mask)))
+				ret = do_lo_receive(lo, &bvec_tmp, bsize, pos);
+			else
+				ret = do_lo_receive_direct_io(lo, &bvec_tmp, bsize, pos);
+		} else
+			ret = do_lo_receive(lo, &bvec_tmp, bsize, pos);
+	} else {
+		bio_for_each_segment(bvec, bio, i) {
+			ret = do_lo_receive(lo, bvec, bsize, pos);
+			if (ret < 0)
+				break;
+			pos += bvec->bv_len;
+		}
+	}
+#else
 	bio_for_each_segment(bvec, bio, i) {
 		ret = do_lo_receive(lo, bvec, bsize, pos);
 		if (ret < 0)
 			break;
 		pos += bvec->bv_len;
 	}
+#endif
 	return ret;
 }
 
@@ -568,6 +711,25 @@ static inline void loop_handle_bio(struct loop_device *lo, struct bio *bio)
 	} else {
 		ret = do_bio_filebacked(lo, bio);
 		bio_endio(bio, bio->bi_size, ret);
+
+#if 0
+		// The following code was used to minimize the waiting time when the corresponding
+		// device was disconnected...
+		if (ret) {
+			// clear all the remaining requests...
+			while (1) {
+				if (!down_trylock(&lo->lo_bh_mutex)) {
+					bio = loop_get_bio(lo);
+					if (!bio) {
+						printk("loop: missing bio\n");
+						continue;
+					}
+					bio_endio(bio, bio->bi_size, ret);
+				} else
+					break;
+			}
+		}
+#endif
 	}
 }
 
@@ -660,6 +822,9 @@ static void do_loop_switch(struct loop_device *lo, struct switch_request *p)
 
 	mapping_set_gfp_mask(old_file->f_mapping, lo->old_gfp_mask);
 	lo->lo_backing_file = file;
+#ifdef CONFIG_BLK_DEV_LOOP_DIRECT_IO
+	lo->lo_backing_super = file->f_mapping->host->i_sb;
+#endif
 	lo->lo_blocksize = mapping->host->i_blksize;
 	lo->old_gfp_mask = mapping_gfp_mask(mapping);
 	mapping_set_gfp_mask(mapping, lo->old_gfp_mask & ~(__GFP_IO|__GFP_FS));
@@ -814,6 +979,9 @@ static int loop_set_fd(struct loop_device *lo, struct file *lo_file,
 	lo->lo_device = bdev;
 	lo->lo_flags = lo_flags;
 	lo->lo_backing_file = file;
+#ifdef CONFIG_BLK_DEV_LOOP_DIRECT_IO
+	lo->lo_backing_super = file->f_mapping->host->i_sb;
+#endif
 	lo->transfer = NULL;
 	lo->ioctl = NULL;
 	lo->lo_sizelimit = 0;
@@ -907,6 +1075,9 @@ static int loop_clr_fd(struct loop_device *lo, struct block_device *bdev)
 	down(&lo->lo_sem);
 
 	lo->lo_backing_file = NULL;
+#ifdef CONFIG_BLK_DEV_LOOP_DIRECT_IO
+	lo->lo_backing_super = NULL;
+#endif
 
 	loop_release_xfer(lo);
 	lo->transfer = NULL;
@@ -1292,6 +1463,7 @@ static int __init loop_init(void)
 		sprintf(disk->devfs_name, "loop/%d", i);
 		disk->private_data = lo;
 		disk->queue = lo->lo_queue;
+		disk->part_num = -1; /*  2007/05/23 cfyeh : partiton number */
 	}
 
 	/* We cannot fail after we call this, so another loop!*/

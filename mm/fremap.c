@@ -152,6 +152,50 @@ err_unlock:
 }
 
 
+/*
+ * Install a file pte to a given virtual memory address, release any
+ * previously existing mapping.
+ */
+int install_phys_pte(struct mm_struct *mm, struct vm_area_struct *vma,
+		unsigned long addr, unsigned long pgoff, pgprot_t prot)
+{
+	int err = -ENOMEM;
+	pte_t *pte;
+	pmd_t *pmd;
+	pud_t *pud;
+	pgd_t *pgd;
+	pte_t pte_val;
+
+	pgd = pgd_offset(mm, addr);
+	spin_lock(&mm->page_table_lock);
+	
+	pud = pud_alloc(mm, pgd, addr);
+	if (!pud)
+		goto err_unlock;
+
+	pmd = pmd_alloc(mm, pud, addr);
+	if (!pmd)
+		goto err_unlock;
+
+	pte = pte_alloc_map(mm, pmd, addr);
+	if (!pte)
+		goto err_unlock;
+
+	zap_pte(mm, vma, addr, pte);
+
+	set_pte_at(mm, addr, pte, pfn_pte(pgoff, prot));
+	pte_val = *pte;
+	pte_unmap(pte);
+	update_mmu_cache(vma, addr, pte_val);
+	spin_unlock(&mm->page_table_lock);
+	return 0;
+
+err_unlock:
+	spin_unlock(&mm->page_table_lock);
+	return err;
+}
+
+
 /***
  * sys_remap_file_pages - remap arbitrary pages of a shared backing store
  *                        file within an existing vma.

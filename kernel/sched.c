@@ -47,6 +47,7 @@
 #include <linux/syscalls.h>
 #include <linux/times.h>
 #include <linux/acct.h>
+#include <linux/auth.h>
 #include <asm/tlb.h>
 
 #include <asm/unistd.h>
@@ -258,7 +259,11 @@ struct runqueue {
 #endif
 };
 
+#ifdef CONFIG_REALTEK_SBSS_IN_DMEM
+static DEFINE_PER_CPU(struct runqueue, runqueues) __attribute__ ((section(".sbss")));
+#else
 static DEFINE_PER_CPU(struct runqueue, runqueues);
+#endif
 
 #define for_each_domain(cpu, domain) \
 	for (domain = cpu_rq(cpu)->sd; domain; domain = domain->parent)
@@ -1372,6 +1377,16 @@ task_t * context_switch(runqueue_t *rq, task_t *prev, task_t *next)
 		rq->prev_mm = oldmm;
 	}
 
+#ifdef  CONFIG_REALTEK_SCHED_LOG
+        if (sched_log_flag & 0x1)
+		log_sched(next->pid);
+#endif
+#ifdef	CONFIG_REALTEK_DETECT_OCCUPY
+	if ((occupy_interval != 0) && (occupy_info.task != next)) {
+		occupy_info.task = next;
+		occupy_info.time = jiffies;
+	}
+#endif
 	/* Here we just switch the register state and the stack. */
 	switch_to(prev, next, prev);
 
@@ -2223,7 +2238,11 @@ static inline int wake_priority_sleeper(runqueue_t *rq)
 	return ret;
 }
 
+#ifdef CONFIG_REALTEK_SBSS_IN_DMEM_ADVANCED
+DEFINE_PER_CPU(struct kernel_stat, kstat) __attribute__ ((section(".sbss")));
+#else
 DEFINE_PER_CPU(struct kernel_stat, kstat);
+#endif
 
 EXPORT_PER_CPU_SYMBOL(kstat);
 

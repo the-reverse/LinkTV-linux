@@ -10,6 +10,7 @@
 #ifndef _LINUX_NOTIFIER_H
 #define _LINUX_NOTIFIER_H
 #include <linux/errno.h>
+#include <linux/rwsem.h>
 
 struct notifier_block
 {
@@ -18,12 +19,38 @@ struct notifier_block
 	int priority;
 };
 
+struct blocking_notifier_head {
+    struct rw_semaphore rwsem;
+    struct notifier_block *head;
+};
+
+#define BLOCKING_INIT_NOTIFIER_HEAD(name) do { \
+               init_rwsem(&(name)->rwsem);     \
+               (name)->head = NULL;            \
+       } while (0)
+
+#define BLOCKING_NOTIFIER_INIT(name) {                         \
+               .rwsem = __RWSEM_INITIALIZER((name).rwsem),     \
+               .head = NULL }
+
+#define BLOCKING_NOTIFIER_HEAD(name)                           \
+       struct blocking_notifier_head name =                    \
+               BLOCKING_NOTIFIER_INIT(name)
 
 #ifdef __KERNEL__
 
 extern int notifier_chain_register(struct notifier_block **list, struct notifier_block *n);
 extern int notifier_chain_unregister(struct notifier_block **nl, struct notifier_block *n);
 extern int notifier_call_chain(struct notifier_block **n, unsigned long val, void *v);
+
+extern int blocking_notifier_chain_register(struct blocking_notifier_head *,
+               struct notifier_block *);
+
+extern int blocking_notifier_chain_unregister(struct blocking_notifier_head *,
+               struct notifier_block *);
+
+extern int blocking_notifier_call_chain(struct blocking_notifier_head *,
+               unsigned long val, void *v);
 
 #define NOTIFY_DONE		0x0000		/* Don't care */
 #define NOTIFY_OK		0x0001		/* Suits me */

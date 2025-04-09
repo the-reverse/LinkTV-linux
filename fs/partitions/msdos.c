@@ -77,8 +77,8 @@ parse_extended(struct parsed_partitions *state, struct block_device *bdev,
 	struct partition *p;
 	Sector sect;
 	unsigned char *data;
-	u32 this_sector, this_size;
-	int sector_size = bdev_hardsect_size(bdev) / 512;
+	u64 this_sector, this_size;
+	u64 sector_size = bdev_hardsect_size(bdev) / 512;
 	int loopct = 0;		/* number of links followed
 				   without finding a data partition */
 	int i;
@@ -113,7 +113,7 @@ parse_extended(struct parsed_partitions *state, struct block_device *bdev,
 		 * First process the data partition(s)
 		 */
 		for (i=0; i<4; i++, p++) {
-			u32 offs, size, next;
+			u64 offs, size, next;
 			if (!NR_SECTS(p) || is_extended_partition(p))
 				continue;
 
@@ -377,14 +377,18 @@ static struct {
 	{NEW_SOLARIS_X86_PARTITION, parse_solaris_x86},
 	{0, NULL},
 };
- 
+
+#define HACK_PARTITION_TABLE_BOOT_IND
 int msdos_partition(struct parsed_partitions *state, struct block_device *bdev)
 {
-	int sector_size = bdev_hardsect_size(bdev) / 512;
+	u64 sector_size = bdev_hardsect_size(bdev) / 512;
 	Sector sect;
 	unsigned char *data;
 	struct partition *p;
 	int slot;
+#ifdef HACK_PARTITION_TABLE_BOOT_IND
+	int check_times = 0;
+#endif
 
 	data = read_dev_sector(bdev, 0, &sect);
 	if (!data)
@@ -403,10 +407,25 @@ int msdos_partition(struct parsed_partitions *state, struct block_device *bdev)
 	p = (struct partition *) (data + 0x1be);
 	for (slot = 1; slot <= 4; slot++, p++) {
 		if (p->boot_ind != 0 && p->boot_ind != 0x80) {
+#ifdef HACK_PARTITION_TABLE_BOOT_IND // hack for boot_ind != 0 && boot_ind != 0x80
+			printk("\n[cfyeh-hack] %s(%d) partition->boot_ind = 0x%.2x (should be 0x0 or 0x80)\n", __func__, __LINE__, p->boot_ind);
+			check_times++;
+#else
 			put_dev_sector(sect);
 			return 0;
+#endif
 		}
 	}
+
+#ifdef HACK_PARTITION_TABLE_BOOT_IND // hack for boot_ind != 0 && boot_ind != 0x80
+	if(check_times > 1)
+	{
+		printk("[cfyeh-hack] %s(%d) partition->boot_ind fail %d times !!!\n", __func__, __LINE__, check_times);
+		put_dev_sector(sect);
+		return 0;
+	}
+
+#endif
 
 #ifdef CONFIG_EFI_PARTITION
 	p = (struct partition *) (data + 0x1be);
@@ -428,11 +447,16 @@ int msdos_partition(struct parsed_partitions *state, struct block_device *bdev)
 
 	state->next = 5;
 	for (slot = 1 ; slot <= 4 ; slot++, p++) {
-		u32 start = START_SECT(p)*sector_size;
-		u32 size = NR_SECTS(p)*sector_size;
+		u64 start = START_SECT(p)*sector_size;
+		u64 size = NR_SECTS(p)*sector_size;
 		if (!size)
 			continue;
 		if (is_extended_partition(p)) {
+			// add to know which partition is a extended partition
+			// by cfyeh 2007/11/13 +
+			state->parts[slot].is_part_extended = 1;
+			// by cfyeh 2007/11/13 -
+
 			/* prevent someone doing mkfs or mkswap on an
 			   extended partition, but leave room for LILO */
 			put_partition(state, slot, start, size == 1 ? 1 : 2);

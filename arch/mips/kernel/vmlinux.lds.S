@@ -23,10 +23,22 @@ SECTIONS
   /* . = 0xa800000000300000; */
   . = 0xffffffff80300000;
 #endif
+#ifdef CONFIG_SHARED_PRINTK
+  . = 0xffffffffa00000e8;
+  .pbss : {
+    *(.bss.buff)
+    *(.bss.buff.len)
+    *(.bss.logged)
+    *(.bss.log.start)
+    *(.bss.con.start)
+    *(.bss.log.end)
+  }
+#endif
   . = LOADADDR;
   /* read-only */
   _text = .;			/* Text and read-only data */
   .text : {
+    arch/mips/kernel/head.o(.init.text)
     *(.text)
     SCHED_TEXT
     LOCK_TEXT
@@ -34,6 +46,11 @@ SECTIONS
     *(.gnu.warning)
   } =0
 
+  .sleep.text : {
+    _sleeptext = .;
+    *(.sleep.text)
+    _esleeptext = .;
+  } =0
   _etext = .;			/* End of text section */
 
   . = ALIGN(16);		/* Exception table */
@@ -56,6 +73,13 @@ SECTIONS
 
     CONSTRUCTORS
   }
+  
+  .sleepdata : {			/* Data */
+    _sleepdata = .;
+    *(.sleep.data)
+    _esleepdata = .;
+  }
+  
   _gp = . + 0x8000;
   .lit8 : { *(.lit8) }
   .lit4 : { *(.lit4) }
@@ -118,10 +142,6 @@ SECTIONS
   /* freed after init ends here */
 
   __bss_start = .;		/* BSS */
-  .sbss      : {
-    *(.sbss)
-    *(.scommon)
-  }
   .bss : {
     *(.bss)
     *(COMMON)
@@ -129,6 +149,14 @@ SECTIONS
   __bss_stop = .;
 
   _end = . ;
+
+  . = 0xffffffff90000000;
+  __dmem_start = .;		/* BSS */
+  .sbss      : {
+    *(.sbss)
+    *(.scommon)
+  }
+  __dmem_stop = .;
 
   /* Sections to be discarded */
   /DISCARD/ : {

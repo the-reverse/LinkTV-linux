@@ -15,6 +15,7 @@
 #include <linux/in6.h>
 
 #include <asm/uaccess.h>
+#include <asm/unaligned.h>
 
 /*
  * computes the checksum of a memory block at buff, length len,
@@ -98,24 +99,29 @@ static inline unsigned short ip_fast_csum(unsigned char *iph, unsigned int ihl)
 	unsigned int *stop = word + ihl;
 	unsigned int csum;
 	int carry;
+	unsigned int uword;
 
-	csum = word[0];
-	csum += word[1];
-	carry = (csum < word[1]);
+	csum = get_unaligned(&word[0]);
+	uword = get_unaligned(&word[1]);
+	csum += uword;
+	carry = (csum < uword);
 	csum += carry;
 
-	csum += word[2];
-	carry = (csum < word[2]);
+	uword = get_unaligned(&word[2]);
+	csum += uword;
+	carry = (csum < uword);
 	csum += carry;
 
-	csum += word[3];
-	carry = (csum < word[3]);
+	uword = get_unaligned(&word[3]);
+	csum += uword;
+	carry = (csum < uword);
 	csum += carry;
 
 	word += 4;
 	do {
-		csum += *word;
-		carry = (csum < *word);
+		uword = get_unaligned(word);
+		csum += uword;
+		carry = (csum < uword);
 		csum += carry;
 		word++;
 	} while (word != stop);

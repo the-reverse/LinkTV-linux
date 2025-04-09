@@ -84,7 +84,9 @@
 
 #include <linux/module.h>
 #include <linux/moduleparam.h>
-#include <linux/pci.h>
+#ifndef CONFIG_REALTEK_VENUS_USB	//cfyeh+ 2005/11/07
+#include <linux/pci.h>	//cfyeh+ 2005/10/05
+#endif /* CONFIG_REALTEK_VENUS_USB */	//cfyeh- 2005/11/07
 #include <linux/kernel.h>
 #include <linux/delay.h>
 #include <linux/ioport.h>
@@ -107,7 +109,12 @@
 #include <asm/system.h>
 #include <asm/unaligned.h>
 #include <asm/byteorder.h>
+#include <platform.h>	// for get board id
 
+#ifdef CONFIG_REALTEK_VENUS_USB //cfyeh+ 2005/11/07
+#include <venus.h>
+#include <mars.h>
+#endif /* CONFIG_REALTEK_VENUS_USB */   //cfyeh- 2005/11/07
 
 #define DRIVER_VERSION "2004 Nov 08"
 #define DRIVER_AUTHOR "Roman Weissgaerber, David Brownell"
@@ -133,7 +140,6 @@
 #endif
 
 /*-------------------------------------------------------------------------*/
-
 static const char	hcd_name [] = "ohci_hcd";
 
 #include "ohci.h"
@@ -426,6 +432,11 @@ static void ohci_usb_reset (struct ohci_hcd *ohci)
 
 /* init memory, and kick BIOS/SMM off */
 
+#ifdef USB_OHCI_DEBUG_SET_WATCH_POINT
+#include <linux/kernel.h>
+static unsigned int watch_address = 0;
+#endif /* USB_OHCI_DEBUG_SET_WATCH_POINT */
+
 static int ohci_init (struct ohci_hcd *ohci)
 {
 	int ret;
@@ -556,6 +567,15 @@ static int ohci_run (struct ohci_hcd *ohci)
 	// flush those writes
 	(void) ohci_readl (ohci, &ohci->regs->control);
 	memset (ohci->hcca, 0, sizeof (struct ohci_hcca));
+
+#ifdef USB_OHCI_DEBUG_SET_WATCH_POINT
+	if(watch_address == 0)
+	{
+		watch_address = (((unsigned int)&(ohci->hcca->done_head)));
+		set_watch_point(watch_address, WATCH_W);
+		printk("##### set watch point at %p\n", watch_address);
+	}
+#endif /* USB_OHCI_DEBUG_SET_WATCH_POINT */
 
 	/* 2msec timelimit here means no irqs/preempt */
 	spin_lock_irq (&ohci->lock);
@@ -690,6 +710,9 @@ retry:
 
 /*-------------------------------------------------------------------------*/
 
+// hack by cfyeh for usb suspend/resume
+extern int usb_ehci_suspend_flag;
+
 /* an interrupt happens */
 
 static irqreturn_t ohci_irq (struct usb_hcd *hcd, struct pt_regs *ptregs)
@@ -697,6 +720,12 @@ static irqreturn_t ohci_irq (struct usb_hcd *hcd, struct pt_regs *ptregs)
 	struct ohci_hcd		*ohci = hcd_to_ohci (hcd);
 	struct ohci_regs __iomem *regs = ohci->regs;
  	int			ints; 
+
+	// hack by cfyeh for usb suspend/resume
+	if(usb_ehci_suspend_flag == 1)
+	{
+		return IRQ_HANDLED;
+	}
 
 	/* we can eliminate a (slow) ohci_readl()
 	   if _only_ WDH caused this irq */
@@ -715,6 +744,15 @@ static irqreturn_t ohci_irq (struct usb_hcd *hcd, struct pt_regs *ptregs)
 	} else if ((ints &= ohci_readl (ohci, &regs->intrenable)) == 0) {
 		return IRQ_NOTMINE;
 	} 
+
+#ifdef USB_MARS_IRQ_CHECK_DATA_READY
+	// cfyeh + : check MARS_USB_HOST_VERSION[11] = 0
+	if(is_mars_cpu())// for mars
+	{
+		while(inl(MARS_USB_HOST_VERSION) & (0x1 << 11));
+	}
+	// cfyeh - : check MARS_USB_HOST_VERSION[11] = 0
+#endif /* USB_MARS_IRQ_CHECK_DATA_READY */
 
 	if (ints & OHCI_INTR_UE) {
 		disable (ohci);
@@ -795,7 +833,7 @@ static void ohci_stop (struct usb_hcd *hcd)
 
 /* must not be called from interrupt context */
 
-#if	defined(CONFIG_USB_SUSPEND) || defined(CONFIG_PM)
+#if	defined(CONFIG_USB_SUSPEND) || defined(CONFIG_PM) || defined(CONFIG_REALTEK_VENUS_USB) //cfyeh+ 2005/11/07
 
 static int ohci_restart (struct ohci_hcd *ohci)
 {
@@ -885,7 +923,11 @@ MODULE_AUTHOR (DRIVER_AUTHOR);
 MODULE_DESCRIPTION (DRIVER_INFO);
 MODULE_LICENSE ("GPL");
 
-#ifdef CONFIG_PCI
+#ifdef CONFIG_REALTEK_VENUS_USB	//cfyeh+ 2005/11/07
+#include "ohci-rbus.c"
+#else
+
+#ifdef _CONFIG_PCI
 #include "ohci-pci.c"
 #endif
 
@@ -909,7 +951,7 @@ MODULE_LICENSE ("GPL");
 #include "ohci-ppc-soc.c"
 #endif
 
-#if !(defined(CONFIG_PCI) \
+#if !(defined(_CONFIG_PCI) \
       || defined(CONFIG_SA1111) \
       || defined(CONFIG_ARCH_OMAP) \
       || defined (CONFIG_ARCH_LH7A404) \
@@ -919,3 +961,5 @@ MODULE_LICENSE ("GPL");
 	)
 #error "missing bus glue for ohci-hcd"
 #endif
+#endif /* CONFIG_REALTEK_VENUS_USB */	//cfyeh- 2005/11/07
+

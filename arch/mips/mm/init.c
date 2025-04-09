@@ -35,6 +35,20 @@
 #include <asm/pgalloc.h>
 #include <asm/tlb.h>
 
+#define DMA_ZONE_SIZE_A		24
+#define DMA_ZONE_SIZE_B		32
+#ifdef CONFIG_REALTEK_MARS_256MB
+#define DMA_ZONE_SIZE_C		16
+
+#define MARS_ZONE_LIMIT		128
+#elif CONFIG_REALTEK_CPU_JUPITER
+#define DMA_ZONE_SIZE_C		16
+
+#define MARS_ZONE_LIMIT		208
+#else
+#define DMA_ZONE_SIZE_C		64
+#endif
+
 DEFINE_PER_CPU(struct mmu_gather, mmu_gathers);
 
 unsigned long highstart_pfn, highend_pfn;
@@ -139,7 +153,7 @@ extern void pagetable_init(void);
 
 void __init paging_init(void)
 {
-	unsigned long zones_size[MAX_NR_ZONES] = {0, 0, 0};
+	unsigned long zones_size[MAX_NR_ZONES] = {0, 0, 0, 0};
 	unsigned long max_dma, high, low;
 
 	pagetable_init();
@@ -152,6 +166,9 @@ void __init paging_init(void)
 	low = max_low_pfn;
 	high = highend_pfn;
 
+	printk("  show info: max_low_pfn:%d\n", max_low_pfn);
+	printk("  show info: min_low_pfn:%d\n", min_low_pfn);
+
 #ifdef CONFIG_ISA
 	if (low < max_dma)
 		zones_size[ZONE_DMA] = low;
@@ -159,8 +176,50 @@ void __init paging_init(void)
 		zones_size[ZONE_DMA] = max_dma;
 		zones_size[ZONE_NORMAL] = low - max_dma;
 	}
+#else 
+//	zones_size[ZONE_DMA] = low;
+#ifdef CONFIG_REALTEK_MARS_256MB
+	if (low > 128*256) {
+		zones_size[ZONE_DMA] = DMA_ZONE_SIZE_C*256;
+		zones_size[ZONE_NORMAL] = low-MARS_ZONE_LIMIT*256;
+#ifdef CONFIG_REALTEK_TEXT_DEBUG
+		zones_size[ZONE_DVR] = MARS_ZONE_LIMIT*256-(DMA_ZONE_SIZE_C*256)-CONFIG_REALTEK_TEXT_SIZE*256;
+		zones_size[ZONE_TEXT] = CONFIG_REALTEK_TEXT_SIZE*256;
 #else
-	zones_size[ZONE_DMA] = low;
+		zones_size[ZONE_DVR] = MARS_ZONE_LIMIT*256-(DMA_ZONE_SIZE_C*256);
+#endif
+#elif CONFIG_REALTEK_CPU_JUPITER
+	if (low > 128*256) {
+		zones_size[ZONE_DMA] = DMA_ZONE_SIZE_C*256;
+		zones_size[ZONE_NORMAL] = low-MARS_ZONE_LIMIT*256;
+#ifdef CONFIG_REALTEK_TEXT_DEBUG
+		zones_size[ZONE_DVR] = MARS_ZONE_LIMIT*256-(DMA_ZONE_SIZE_C*256)-CONFIG_REALTEK_TEXT_SIZE*256;
+		zones_size[ZONE_TEXT] = CONFIG_REALTEK_TEXT_SIZE*256;
+#else
+		zones_size[ZONE_DVR] = MARS_ZONE_LIMIT*256-(DMA_ZONE_SIZE_C*256);
+#endif
+#else
+	if (low > 128*256) {
+		zones_size[ZONE_DMA] = DMA_ZONE_SIZE_C*256;
+#ifdef CONFIG_REALTEK_TEXT_DEBUG
+		zones_size[ZONE_DVR] = low-(DMA_ZONE_SIZE_C*256)-CONFIG_REALTEK_TEXT_SIZE*256;
+		zones_size[ZONE_TEXT] = CONFIG_REALTEK_TEXT_SIZE*256;
+#else
+		zones_size[ZONE_DVR] = low-(DMA_ZONE_SIZE_C*256);
+#endif
+#endif
+	} else if (low > 64*256) {
+		zones_size[ZONE_DMA] = DMA_ZONE_SIZE_B*256;
+#ifdef CONFIG_REALTEK_TEXT_DEBUG
+		zones_size[ZONE_DVR] = low-(DMA_ZONE_SIZE_B*256)-CONFIG_REALTEK_TEXT_SIZE*256;
+		zones_size[ZONE_TEXT] = CONFIG_REALTEK_TEXT_SIZE*256;
+#else
+		zones_size[ZONE_DVR] = low-(DMA_ZONE_SIZE_B*256);
+#endif
+	} else {
+		zones_size[ZONE_DMA] = DMA_ZONE_SIZE_A*256;
+		zones_size[ZONE_DVR] = low-(DMA_ZONE_SIZE_A*256);
+	}
 #endif
 #ifdef CONFIG_HIGHMEM
 	if (cpu_has_dc_aliases) {

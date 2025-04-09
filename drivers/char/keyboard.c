@@ -153,6 +153,72 @@ static int sysrq_down;
 #endif
 static int sysrq_alt;
 
+// -------------------------------------------------------------------------------------------------
+/* Realtek keyboard mapping helper function */
+#if defined(CONFIG_REALTEK_USE_RTD_KEYMAP)
+#include <linux/rtd_hid_keymap.h>
+#include <linux/kernel.h>
+
+static void puts_queue(struct vc_data *vc, char *cp);
+
+static inline void rtd_kbd_lock_key(struct vc_data *vc, unsigned char lock_key, unsigned char key_state)
+{
+    // static char buf[] = { 0x1b, '[', 'R', 'L',0x0,0x0,0x0};
+    char buf[] = { 0x1b, '[', 'R', 'L',0x0,0x0,0x0};
+    	    		    	    	    		   	    	    
+	switch (lock_key)
+    {
+        case VC_SCROLLOCK:
+            buf[4] = 'S';
+        break;
+        
+        case VC_NUMLOCK:
+            buf[4] = 'N';
+        break;
+        
+        case VC_CAPSLOCK:
+            buf[4] = 'C';
+        break;
+        
+        case VC_KANALOCK:
+            buf[4] = 'K';
+        break;        
+    }   
+    
+    buf[5] = (key_state ? '1' : '0');	  
+		
+	puts_queue(vc, buf);
+}   
+
+// cyhuang (2011/05/16) : Add for realtek keymap (MCE or keyboard media key support)
+static inline int rtd_kbd_map_key(struct vc_data *vc,unsigned int keycode,char up_flag) 
+{
+    char buf[] = { 0x1b, '[', 'R', 0x0,0x0,0x0,0x0,0x0,0x0};   
+            
+    // printk("%s : keycode = 0x%x\n",__func__,keycode);
+    
+    if (keycode < RTD_GENDESK_KEY_BASE)
+        return 0;
+        
+    if (up_flag)
+		return 1;    
+    
+    if ((keycode > RTD_GENDESK_KEY_BASE) && (keycode < RTD_KEY_BASE))
+        sprintf(buf+1,"[RG%04x",keycode);
+    else if ((keycode >= RTD_KEY_BASE) && (keycode < RTD_CONSUMER_KEY_BASE))
+        sprintf(buf+1,"[RM%04x",keycode); 
+    else if (keycode >= RTD_CONSUMER_KEY_BASE)
+        sprintf(buf+1,"[RC%04x",keycode);           
+    else
+        return 0;   
+        
+    puts_queue(vc, buf);     
+    return 1;
+}
+
+#endif	// CONFIG_REALTEK_USE_RTD_KEYMAP
+// -------------------------------------------------------------------------------------------------
+
 /*
  * Translation of scancodes to keycodes. We set them on only the first attached
  * keyboard - for per-keyboard setting, /dev/input/event is more useful.
@@ -432,14 +498,24 @@ static void fn_caps_toggle(struct vc_data *vc, struct pt_regs *regs)
 {
 	if (rep)
 		return;
+		
 	chg_vc_kbd_led(kbd, VC_CAPSLOCK);
+
+#if defined(CONFIG_REALTEK_USE_RTD_KEYMAP)
+    rtd_kbd_lock_key(vc,VC_CAPSLOCK,vc_kbd_led(kbd, VC_CAPSLOCK));
+#endif	
 }
 
 static void fn_caps_on(struct vc_data *vc, struct pt_regs *regs)
 {
 	if (rep)
 		return;
+		
 	set_vc_kbd_led(kbd, VC_CAPSLOCK);
+	
+#if defined(CONFIG_REALTEK_USE_RTD_KEYMAP)
+    rtd_kbd_lock_key(vc,VC_CAPSLOCK,vc_kbd_led(kbd, VC_CAPSLOCK));
+#endif			
 }
 
 static void fn_show_ptregs(struct vc_data *vc, struct pt_regs *regs)
@@ -472,6 +548,10 @@ static void fn_num(struct vc_data *vc, struct pt_regs *regs)
 		applkey(vc, 'P', 1);
 	else
 		fn_bare_num(vc, regs);
+		
+#if defined(CONFIG_REALTEK_USE_RTD_KEYMAP)
+    rtd_kbd_lock_key(vc,VC_NUMLOCK,vc_kbd_led(kbd, VC_NUMLOCK));
+#endif		
 }
 
 /*
@@ -744,6 +824,8 @@ static void k_pad(struct vc_data *vc, unsigned char value, char up_flag, struct 
 static void k_shift(struct vc_data *vc, unsigned char value, char up_flag, struct pt_regs *regs)
 {
 	int old_state = shift_state;
+
+    // printk("%s : value = 0x%x , up_flag = %d\n",__func__,value,up_flag);
 
 	if (rep)
 		return;
@@ -1035,6 +1117,12 @@ static void kbd_keycode(unsigned int keycode, int down,
 	struct tty_struct *tty;
 	int shift_final;
 
+#if 0
+#ifdef CONFIG_REALTEK_VENUS_USB	//cfyeh+ 2005/11/07
+	printk("%s : keycode = 0x%.2x\n", __FUNCTION__, keycode);
+#endif /* CONFIG_REALTEK_VENUS_USB */	//cfyeh- 2005/11/07
+#endif
+	
 	tty = vc->vc_tty;
 
 	if (tty && (!tty->driver_data)) {
@@ -1124,8 +1212,15 @@ static void kbd_keycode(unsigned int keycode, int down,
 		return;
 	}
 
+// cyhuang (2011/05/16) : Add for realtek keymap (MCE or keyboard media key support)
+#if defined(CONFIG_REALTEK_USE_RTD_KEYMAP)
+    if (rtd_kbd_map_key(vc,keycode,!down) == 1)
+        return;
+#endif
+	
 	if (keycode > NR_KEYS)
 		return;
+	
 
 	keysym = key_map[keycode];
 	type = KTYP(keysym);
@@ -1148,7 +1243,7 @@ static void kbd_keycode(unsigned int keycode, int down,
 				keysym = key_map[keycode];
 		}
 	}
-
+    
 	(*k_handler[type])(vc, keysym & 0xff, !down, regs);
 
 	if (type != KT_SLOCK)

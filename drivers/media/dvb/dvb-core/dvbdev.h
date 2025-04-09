@@ -44,14 +44,13 @@
 
 
 struct dvb_adapter {
-	int num;
-	struct list_head list_head;
-	struct list_head device_list;
-	const char *name;
-	u8 proposed_mac [6];
-	void* priv;
-
-	struct module *module;
+	int                 num;
+	struct list_head    list_head;
+	struct list_head    device_list;
+	const char *        name;
+	u8                  proposed_mac [6];
+	void*               priv;
+	struct module*      module;
 };
 
 
@@ -68,8 +67,9 @@ struct dvb_device {
 	int writers;
 	int users;
 
-        /* don't really need those !? -- FIXME: use video_usercopy  */
-        int (*kernel_ioctl)(struct inode *inode, struct file *file,
+	wait_queue_head_t	  wait_queue;
+	/* don't really need those !? -- FIXME: use video_usercopy  */
+	int (*kernel_ioctl)(struct inode *inode, struct file *file,
 			    unsigned int cmd, void *arg);
 
 	void *priv;

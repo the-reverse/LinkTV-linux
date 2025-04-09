@@ -10,7 +10,7 @@
 #ifndef _MMC_H
 #define _MMC_H
 /* core-internal functions */
-void mmc_init_card(struct mmc_card *card, struct mmc_host *host);
+//void mmc_init_card(struct mmc_card *card, struct mmc_host *host);
 int mmc_register_card(struct mmc_card *card);
 void mmc_remove_card(struct mmc_card *card);
 #endif

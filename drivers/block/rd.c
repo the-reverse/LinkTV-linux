@@ -230,6 +230,10 @@ static int rd_blkdev_pagecache_IO(int rw, struct bio_vec *vec, sector_t sector,
 
 		index++;
 
+#ifdef CONFIG_REALTEK_PREVENT_DC_ALIAS
+		flush_dcache_page_alias(vec->bv_page);
+#endif
+
 		if (rw == READ) {
 			src = kmap_atomic(page, KM_USER0) + offset;
 			dst = kmap_atomic(vec->bv_page, KM_USER1) + vec_offset;
@@ -379,7 +383,7 @@ static int rd_open(struct inode *inode, struct file *filp)
 		 * driver happy.
 		 */
 		gfp_mask = mapping_gfp_mask(mapping);
-		gfp_mask &= ~(__GFP_FS|__GFP_IO);
+		gfp_mask &= ~(__GFP_FS|__GFP_IO|GFP_ZONEMASK);
 		gfp_mask |= __GFP_HIGH;
 		mapping_set_gfp_mask(mapping, gfp_mask);
 	}

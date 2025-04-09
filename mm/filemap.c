@@ -28,6 +28,8 @@
 #include <linux/blkdev.h>
 #include <linux/security.h>
 #include <linux/syscalls.h>
+#include <linux/auth.h>
+#include <linux/dma-mapping.h>
 /*
  * FIXME: remove all knowledge of the buffer layer from the core VM
  */
@@ -35,6 +37,14 @@
 
 #include <asm/uaccess.h>
 #include <asm/mman.h>
+#include <platform.h>
+
+#define LIMIT_SIZE	16
+#define RAMFS_MAGIC	0x858458f6
+#define DVRFS_MAGIC	0x858458f8
+#define RAMFS_ORDER	9
+
+#define lru_to_page(_head) (list_entry((_head)->prev, struct page, lru))
 
 /*
  * Shared mappings implemented 30.11.1994. It's not fully working yet,
@@ -98,6 +108,113 @@
  *  ->task->proc_lock
  *    ->dcache_lock		(proc_pid_lookup)
  */
+
+DECLARE_MUTEX(ramfs_lru_sem);
+struct list_head	ramfs_lru_list = LIST_HEAD_INIT(ramfs_lru_list);
+spinlock_t		ramfs_lru_lock;
+int			ramfs_lru_size;
+DECLARE_MUTEX(dvrfs_lru_sem);
+struct list_head	dvrfs_lru_list = LIST_HEAD_INIT(dvrfs_lru_list);
+spinlock_t		dvrfs_lru_lock;
+int			dvrfs_lru_size;
+
+typedef struct
+{
+	unsigned long addr;     /* base address of a contiguous memory chunk */
+	unsigned long size;     /* size of the memory chunk */
+} video_mem_chunk;
+
+video_mem_chunk		dvrfs_mem_chunk[8];
+unsigned int		dvrfs_mem_len = 0;
+
+int add_dvrfs_buffer(unsigned int addr, unsigned int size)
+{
+	unsigned long flags;
+	int ret = -1;
+
+	if (!(addr & 0x80000000) || (addr & ~PAGE_MASK) || (size & ~PAGE_MASK)) {
+		printk("Error, wrong parameters...\n");
+		goto out;
+	}
+	down_interruptible(&dvrfs_lru_sem);
+	if (dvrfs_mem_len < 8) {
+		struct page *page;
+		int i;
+
+		dvrfs_mem_chunk[dvrfs_mem_len].addr = addr;
+		dvrfs_mem_chunk[dvrfs_mem_len].size = size;
+		ret = dvrfs_mem_len++;
+
+		page = virt_to_page(addr);
+//		printk(" adding %d page \n", size >> PAGE_SHIFT);
+		for (i = 0; i < (size >> PAGE_SHIFT); i++) {
+			if (page_count(&page[i]) == 1) {
+				SetPageHead(&page[i]);
+				set_page_count(&page[i], 0);
+			} else if (page_count(&page[i]) != 0)
+				BUG();
+
+			SetPageDvrfs(&page[i]);
+		}
+
+		spin_lock_irqsave(&dvrfs_lru_lock, flags);
+		for (i = 0; i < (size >> PAGE_SHIFT); i++) {
+			list_add(&page[i].lru, &dvrfs_lru_list);
+		}
+		spin_unlock_irqrestore(&dvrfs_lru_lock, flags);
+
+		dvrfs_lru_size += (size >> PAGE_SHIFT);
+	} else
+		printk("Error, memory chunk overflow...\n");
+	up(&dvrfs_lru_sem);
+out:
+	return ret;
+}
+
+int free_dvrfs_buffer(void)
+{
+	unsigned long flags;
+	int i, j;
+
+	down_interruptible(&dvrfs_lru_sem);
+	for (i = 0; i < dvrfs_mem_len; i++) {
+		unsigned size = dvrfs_mem_chunk[i].size;
+		struct page *page;
+
+		page = virt_to_page(dvrfs_mem_chunk[i].addr);
+//		printk(" freeing %d page \n", size >> PAGE_SHIFT);
+		for (j = 0; j < (size >> PAGE_SHIFT); j++) {
+			if (page_count(&page[j]) != 0) {
+				printk("Error, page: %x wrong state...\n", (unsigned int)page_address(&page[j]));
+				BUG();
+			}
+			spin_lock_irqsave(&dvrfs_lru_lock, flags);
+			list_del(&page[j].lru);
+			spin_unlock_irqrestore(&dvrfs_lru_lock, flags);
+			ClearPageDvrfs(&page[j]);
+			if (PageHead(&page[j])) {
+				set_page_count(&page[j], 1);
+				ClearPageHead(&page[j]);
+			}
+
+#ifdef CONFIG_REALTEK_PREVENT_DC_ALIAS
+			flush_dcache_page_alias(&page[j]);
+#else
+			flush_dcache_page(&page[j]);
+#endif
+		}
+		dvrfs_lru_size -= (size >> PAGE_SHIFT);
+	}
+	dvrfs_mem_len = 0;
+
+	if ((!list_empty(&dvrfs_lru_list)) || (dvrfs_lru_size != 0)) {
+		printk("Error, inconsistent state...\n");
+		BUG();
+	}
+	up(&dvrfs_lru_sem);
+
+	return 0;
+}
 
 /*
  * Remove a page from the page cache and free it. Caller has to make
@@ -365,6 +482,38 @@ int filemap_write_and_wait_range(struct address_space *mapping,
 	return retval;
 }
 
+int flush_page_cache(void *p)
+{
+	struct address_space *mapping = (struct address_space *)p;
+	struct inode *inode = mapping->host;
+	ssize_t retval;
+	struct task_struct *task;
+	
+	daemonize("flush thread");
+	current->flags |= PF_NOFREEZE;
+	
+	task = find_task_by_pid(current->pid);
+	sys_setpriority(PRIO_PROCESS, current->pid, 10);
+	printk("------flush priority: %d \n", task_nice(task));
+
+	down(&inode->i_sem);
+	printk("flush_page_cache: do flush...\n");
+	if (mapping_mapped(mapping))
+	        unmap_mapping_range(mapping, 0, 0, 0);
+	
+	retval = filemap_write_and_wait(mapping);
+	if (retval == 0) {
+	        int err = invalidate_inode_pages2(mapping);
+	        if (err)
+	                printk("error in invalidate_inode_pages\n");
+	}
+	up(&inode->i_sem);
+	
+	set_bit(AS_CROSS_SYNC, &mapping->flags);
+
+	return 0;
+}
+
 /*
  * This function is used to add newly allocated pagecache pages:
  * the page is new, so we can just run SetPageLocked() against it.
@@ -375,7 +524,21 @@ int filemap_write_and_wait_range(struct address_space *mapping,
 int add_to_page_cache(struct page *page, struct address_space *mapping,
 		pgoff_t offset, int gfp_mask)
 {
-	int error = radix_tree_preload(gfp_mask & ~__GFP_HIGHMEM);
+	int error;
+/* check memory leak
+	struct inode *inode;
+*/
+
+	if (test_bit(AS_LIMIT_SIZE, &mapping->flags)) {
+//		printk("--------page cache size: %d \n", mapping->nrpages);
+
+		if ((mapping->nrpages >= LIMIT_SIZE) && (test_and_clear_bit(AS_CROSS_SYNC, &mapping->flags))) {
+//		printk("--------page cache size: %d \n", mapping->nrpages);
+			kernel_thread(shrink_page_cache, (long)mapping, CLONE_KERNEL);
+		}
+	}
+
+	error = radix_tree_preload(gfp_mask & ~GFP_ZONEMASK);
 
 	if (error == 0) {
 		write_lock_irq(&mapping->tree_lock);
@@ -388,6 +551,12 @@ int add_to_page_cache(struct page *page, struct address_space *mapping,
 			mapping->nrpages++;
 			pagecache_acct(1);
 		}
+/* check memory leak
+		inode = mapping->host;
+		if (S_ISBLK(inode->i_mode)) {
+			printk("major: %d, minor: %d...\n", MAJOR(inode->i_rdev), MINOR(inode->i_rdev));
+		}
+*/
 		write_unlock_irq(&mapping->tree_lock);
 		radix_tree_preload_end();
 	}
@@ -560,6 +729,7 @@ repeat:
 				page_cache_release(page);
 				goto repeat;
 			}
+			BUG_ON(PageAgain(page));
 		}
 	}
 	read_unlock_irq(&mapping->tree_lock);
@@ -776,7 +946,11 @@ page_ok:
 		 * before reading the page on the kernel side.
 		 */
 		if (mapping_writably_mapped(mapping))
+#ifdef CONFIG_REALTEK_PREVENT_DC_ALIAS
+			flush_dcache_page_alias(page);
+#else
 			flush_dcache_page(page);
+#endif
 
 		/*
 		 * When (part of) the same page is read multiple times
@@ -822,6 +996,8 @@ page_not_up_to_date:
 			unlock_page(page);
 			goto page_ok;
 		}
+
+		BUG_ON(PageAgain(page));
 
 readpage:
 		/* Start the actual read. The read will unlock the page. */
@@ -1199,6 +1375,9 @@ retry_all:
 	if (pgoff >= size)
 		goto outside_data_content;
 
+//	if ((area->vm_flags & VM_EXEC) && !(area->vm_flags & VM_WRITE)) {
+//		printk("***%s address: %x, property: %x \n", current->comm, address, area->vm_flags);
+//	}
 	/* If we don't want any read-ahead, don't bother */
 	if (VM_RandomReadHint(area))
 		goto no_cached_page;
@@ -1210,7 +1389,37 @@ retry_all:
 	 * For sequential accesses, we use the generic readahead logic.
 	 */
 	if (VM_SequentialReadHint(area))
+#ifdef CONFIG_REALTEK_TEXT_DEBUG
+	{
+		if ((area->vm_flags & VM_EXEC) && !(area->vm_flags & VM_WRITE)) {
+			struct pagevec lru_pvec;
+			struct page *page;
+
+			read_lock_irq(&mapping->tree_lock);
+			page = radix_tree_lookup(&mapping->page_tree, page_offset);
+			read_unlock_irq(&mapping->tree_lock);
+			if (!page) {
+				page = alloc_pages(GFP_TEXTUSER | __GFP_COLD, 0);
+				read_lock_irq(&mapping->tree_lock);
+				page->index = pgoff;
+				read_unlock_irq(&mapping->tree_lock);
+
+				pagevec_init(&lru_pvec, 0);
+				if (!add_to_page_cache(page, mapping, page->index, GFP_KERNEL)) {
+					mapping->a_ops->readpage(file, page);
+					if (!pagevec_add(&lru_pvec, page))
+						__pagevec_lru_add(&lru_pvec);
+				} else {
+					page_cache_release(page);
+				}
+				pagevec_lru_add(&lru_pvec);
+			}
+		}
 		page_cache_readahead(mapping, ra, file, pgoff, 1);
+	}
+#else
+		page_cache_readahead(mapping, ra, file, pgoff, 1);
+#endif
 
 	/*
 	 * Do we have something in the page cache already?
@@ -1242,13 +1451,53 @@ retry_find:
 			inc_page_state(pgmajfault);
 		}
 		did_readaround = 1;
-		ra_pages = max_sane_readahead(file->f_ra.ra_pages);
+#ifdef CONFIG_REALTEK_TEXT_DEBUG
+		ra_pages = 1;
+#else
+		if (test_bit(AS_LIMIT_SIZE, &mapping->flags))
+			ra_pages = 1;
+		else
+			ra_pages = max_sane_readahead(file->f_ra.ra_pages);
+#endif
 		if (ra_pages) {
 			pgoff_t start = 0;
 
 			if (pgoff > ra_pages / 2)
 				start = pgoff - ra_pages / 2;
+#ifdef CONFIG_REALTEK_TEXT_DEBUG
+			if ((area->vm_flags & VM_EXEC) && !(area->vm_flags & VM_WRITE)) {
+				struct pagevec lru_pvec;
+				struct page *page;
+				int page_idx;
+
+				for (page_idx = 0; page_idx < ra_pages; page_idx++) {
+					pgoff_t page_offset = start + page_idx;
+
+					read_lock_irq(&mapping->tree_lock);
+					page = radix_tree_lookup(&mapping->page_tree, page_offset);
+					read_unlock_irq(&mapping->tree_lock);
+					if (!page) {
+						page = alloc_pages(GFP_TEXTUSER | __GFP_COLD, 0);
+						read_lock_irq(&mapping->tree_lock);
+						page->index = page_offset;
+						read_unlock_irq(&mapping->tree_lock);
+
+						pagevec_init(&lru_pvec, 0);
+						if (!add_to_page_cache(page, mapping, page->index, GFP_KERNEL)) {
+							mapping->a_ops->readpage(file, page);
+							if (!pagevec_add(&lru_pvec, page))
+								__pagevec_lru_add(&lru_pvec);
+						} else {
+							page_cache_release(page);
+						}
+						pagevec_lru_add(&lru_pvec);
+					}
+				}
+			} 
 			do_page_cache_readahead(mapping, file, start, ra_pages);
+#else
+			do_page_cache_readahead(mapping, file, start, ra_pages);
+#endif
 		}
 		page = find_get_page(mapping, pgoff);
 		if (!page)
@@ -1326,6 +1575,8 @@ page_not_uptodate:
 		unlock_page(page);
 		goto success;
 	}
+
+	BUG_ON(PageAgain(page));
 
 	if (!mapping->a_ops->readpage(file, page)) {
 		wait_on_page_locked(page);
@@ -1439,6 +1690,8 @@ page_not_uptodate:
 		unlock_page(page);
 		goto success;
 	}
+
+	BUG_ON(PageAgain(page));
 
 	if (!mapping->a_ops->readpage(file, page)) {
 		wait_on_page_locked(page);
@@ -1636,6 +1889,9 @@ retry:
 		unlock_page(page);
 		goto out;
 	}
+
+	BUG_ON(PageAgain(page));
+
 	err = filler(data, page);
 	if (err < 0) {
 		page_cache_release(page);
@@ -1658,11 +1914,74 @@ __grab_cache_page(struct address_space *mapping, unsigned long index,
 {
 	int err;
 	struct page *page;
+	unsigned long flags;
 repeat:
 	page = find_lock_page(mapping, index);
 	if (!page) {
 		if (!*cached_page) {
-			*cached_page = page_cache_alloc(mapping);
+			if ((platform_info.update_mode) && (mapping->host->i_sb->s_magic == RAMFS_MAGIC)) {
+				struct page *mypage = NULL;
+
+				down_interruptible(&ramfs_lru_sem);
+				if (list_empty(&ramfs_lru_list)) {
+					struct page *update_pool;
+					int i;
+
+					update_pool = virt_to_page(dvr_malloc(PAGE_SIZE << (RAMFS_ORDER-1)));
+					if (update_pool == NULL)
+						BUG();
+					ramfs_lru_size += 1<<(RAMFS_ORDER-1);
+					printk("### Adding %d MB (%d pages total)\n", 1<<(RAMFS_ORDER-9), ramfs_lru_size);
+
+					for (i = 0; i < 1<<(RAMFS_ORDER-1); i++) {
+						if (page_count(&update_pool[i]) == 1) {
+							SetPageHead(&update_pool[i]);
+							set_page_count(&update_pool[i], 0);
+						} else if (page_count(&update_pool[i]) != 0)
+							BUG();
+
+						SetPageRamfs(&update_pool[i]);
+					}
+
+					spin_lock_irqsave(&ramfs_lru_lock, flags);
+					for (i = 0; i < 1<<(RAMFS_ORDER-1); i++) {
+						list_add(&update_pool[i].lru, &ramfs_lru_list);
+					}
+					spin_unlock_irqrestore(&ramfs_lru_lock, flags);
+				}
+				up(&ramfs_lru_sem);
+
+				spin_lock_irqsave(&ramfs_lru_lock, flags);
+				if (!list_empty(&ramfs_lru_list)) {
+					mypage = lru_to_page(&ramfs_lru_list);
+					// get page from the list...
+					list_del(&mypage->lru);
+					page_cache_get(mypage);
+				}
+				spin_unlock_irqrestore(&ramfs_lru_lock, flags);
+
+				if (!mypage)
+					*cached_page = page_cache_alloc(mapping);
+				else 
+					*cached_page = mypage;
+			} else if (mapping->host->i_sb->s_magic == DVRFS_MAGIC) {
+				struct page *mypage = NULL;
+
+				spin_lock_irqsave(&dvrfs_lru_lock, flags);
+				if (!list_empty(&dvrfs_lru_list)) {
+					mypage = lru_to_page(&dvrfs_lru_list);
+					// get page from the list...
+					list_del(&mypage->lru);
+					page_cache_get(mypage);
+				}
+				spin_unlock_irqrestore(&dvrfs_lru_lock, flags);
+
+				if (!mypage)
+					*cached_page = page_cache_alloc(mapping);
+				else 
+					*cached_page = mypage;
+			} else 
+				*cached_page = page_cache_alloc(mapping);
 			if (!*cached_page)
 				return NULL;
 		}
@@ -1672,9 +1991,11 @@ repeat:
 			goto repeat;
 		if (err == 0) {
 			page = *cached_page;
-			page_cache_get(page);
-			if (!pagevec_add(lru_pvec, page))
-				__pagevec_lru_add(lru_pvec);
+			if (!PageRamfs(page) && !PageDvrfs(page)) {
+				page_cache_get(page);
+				if (!pagevec_add(lru_pvec, page))
+					__pagevec_lru_add(lru_pvec);
+			}
 			*cached_page = NULL;
 		}
 	}
@@ -2001,12 +2322,18 @@ generic_file_buffered_write(struct kiocb *iocb, const struct iovec *iov,
 			 * prepare_write() may have instantiated a few blocks
 			 * outside i_size.  Trim these off again.
 			 */
+//			printk("*********************************************************\n");
+//			printk("ready to truncate file: status: %d, des: %d\n", status, pos+bytes);
+//			printk("*********************************************************\n");
 			unlock_page(page);
 			page_cache_release(page);
 			if (pos + bytes > isize)
 				vmtruncate(inode, isize);
 			break;
 		}
+#ifdef CONFIG_REALTEK_PREVENT_DC_ALIAS
+		flush_dcache_page_alias(page);
+#endif
 		if (likely(nr_segs == 1))
 			copied = filemap_copy_from_user(page, offset,
 							buf, bytes);

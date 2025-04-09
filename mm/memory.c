@@ -58,6 +58,9 @@
 #include <linux/swapops.h>
 #include <linux/elf.h>
 
+#include <linux/auth.h>
+extern unsigned int map_start_addr;
+
 #ifndef CONFIG_DISCONTIGMEM
 /* use the per-pgdat data instead for discontigmem - mbligh */
 unsigned long max_mapnr;
@@ -579,6 +582,9 @@ static void zap_pte_range(struct mmu_gather *tlb, pmd_t *pmd,
 			continue;
 		if (!pte_file(ptent))
 			free_swap_and_cache(pte_to_swp_entry(ptent));
+		else
+			// Ensure TLB will be flushed when we unmap a vma mapped by /dev/mem.
+			tlb->need_flush = 1;
 		pte_clear(tlb->mm, addr, pte);
 	} while (pte++, addr += PAGE_SIZE, addr != end);
 	pte_unmap(pte - 1);
@@ -772,6 +778,41 @@ unsigned long zap_page_range(struct vm_area_struct *vma, unsigned long address,
 	return end;
 }
 
+struct page *
+my_follow_page(struct mm_struct *mm, unsigned long address)
+{
+        pgd_t *pgd;
+        pud_t *pud;
+        pmd_t *pmd;
+        pte_t *pte;
+        unsigned long pfn;
+        struct page *page;
+
+        pgd = pgd_offset(mm, address);
+        if (pgd_none(*pgd) || unlikely(pgd_bad(*pgd)))
+                goto out;
+
+        pud = pud_offset(pgd, address);
+        if (pud_none(*pud) || unlikely(pud_bad(*pud)))
+                goto out;
+
+        pmd = pmd_offset(pud, address);
+        if (pmd_none(*pmd) || unlikely(pmd_bad(*pmd)))
+                goto out;
+
+        pte = pte_offset(pmd, address);
+        if (!pte)
+                goto out;
+
+        pfn = pte_pfn(*pte);
+//      printk("pte: %x, pfn: %x \n", *pte, pfn);
+        page = pfn_to_page(pfn);
+        SetPageDVR(page);
+        return page;
+out:
+        return NULL;
+}
+
 /*
  * Do a quick page-table lookup for a single page.
  * mm->page_table_lock must be held.
@@ -907,6 +948,9 @@ int get_user_pages(struct task_struct *tsk, struct mm_struct *mm,
 		struct vm_area_struct *	vma;
 
 		vma = find_extend_vma(mm, start);
+                if (vma && (vma->vm_flags & VM_DVR))
+			if ((start >= map_start_addr) && (start < map_start_addr + DEF_MEM_SIZE))
+				start = start + DEF_MEM_SIZE*2; /* use uncached dvr region */
 		if (!vma && in_gate_area(tsk, start)) {
 			unsigned long pg = start & PAGE_MASK;
 			struct vm_area_struct *gate_vma = get_gate_vma(tsk);
@@ -955,6 +999,9 @@ int get_user_pages(struct task_struct *tsk, struct mm_struct *mm,
 			int lookup_write = write;
 
 			cond_resched_lock(&mm->page_table_lock);
+                if (vma && (vma->vm_flags & VM_DVR))
+                        map = my_follow_page(mm, start);
+                else
 			while (!(map = follow_page(mm, start, lookup_write))) {
 				/*
 				 * Shortcut for anonymous pages. We don't want
@@ -1002,7 +1049,15 @@ int get_user_pages(struct task_struct *tsk, struct mm_struct *mm,
 					i = -EFAULT;
 					goto out;
 				}
+#ifdef CONFIG_REALTEK_PREVENT_DC_ALIAS
+				if (cpu_has_dc_aliases && PageAnon(pages[i]) && 
+						pages_do_alias((unsigned long)page_address(pages[i]), start))
+					flush_dcache_page_alias(pages[i]);
+				else
+					flush_dcache_page(pages[i]);
+#else
 				flush_dcache_page(pages[i]);
+#endif
 				if (!PageReserved(pages[i]))
 					page_cache_get(pages[i]);
 			}
@@ -1019,6 +1074,42 @@ out:
 }
 
 EXPORT_SYMBOL(get_user_pages);
+
+#if CONFIG_USB_FILE_STORAGE_DIRECT_IO_MODE || CONFIG_BLK_DEV_LOOP_DIRECT_IO
+int get_kernel_pages(struct task_struct *tsk, struct mm_struct *mm,
+		unsigned long start, int len, int write, int force,
+		struct page **pages, struct vm_area_struct **vmas)
+{
+	int i;
+	unsigned int flags;
+
+	/* 
+	 * Require read or write permissions.
+	 * If 'force' is set, we only require the "MAY" flags.
+	 */
+	flags = write ? (VM_WRITE | VM_MAYWRITE) : (VM_READ | VM_MAYREAD);
+	flags &= force ? (VM_MAYREAD | VM_MAYWRITE) : (VM_READ | VM_WRITE);
+	i = 0;
+
+	do {
+		if (pages) {
+			if ((start & UNCAC_BASE) == UNCAC_BASE)
+				pages[i] = virt_to_page(CAC_ADDR(start));
+			else
+				pages[i] = virt_to_page(start);
+			get_page(pages[i]);
+			SetPageDVR(pages[i]);
+		}
+		i++;
+		start += PAGE_SIZE;
+		len--;
+	} while(len);
+
+	return i;
+}
+
+EXPORT_SYMBOL(get_kernel_pages);
+#endif /* CONFIG_USB_FILE_STORAGE_DIRECT_IO_MODE */
 
 static int zeromap_pte_range(struct mm_struct *mm, pmd_t *pmd,
 			unsigned long addr, unsigned long end, pgprot_t prot)
@@ -1110,7 +1201,7 @@ static int remap_pte_range(struct mm_struct *mm, pmd_t *pmd,
 		return -ENOMEM;
 	do {
 		BUG_ON(!pte_none(*pte));
-		if (!pfn_valid(pfn) || PageReserved(pfn_to_page(pfn)))
+//		if (!pfn_valid(pfn) || PageReserved(pfn_to_page(pfn)))
 			set_pte_at(mm, addr, pte, pfn_pte(pfn, prot));
 		pfn++;
 	} while (pte++, addr += PAGE_SIZE, addr != end);
@@ -1164,7 +1255,7 @@ int remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
 {
 	pgd_t *pgd;
 	unsigned long next;
-	unsigned long end = addr + size;
+	unsigned long end = addr + PAGE_ALIGN(size);
 	struct mm_struct *mm = vma->vm_mm;
 	int err;
 
@@ -1295,7 +1386,7 @@ static int do_wp_page(struct mm_struct *mm, struct vm_area_struct * vma,
 		if (!new_page)
 			goto no_new_page;
 	} else {
-		new_page = alloc_page_vma(GFP_HIGHUSER, vma, address);
+		new_page = alloc_page_vma(GFP_DVRUSER, vma, address);
 		if (!new_page)
 			goto no_new_page;
 		copy_user_highpage(new_page, old_page, address);
@@ -1665,6 +1756,7 @@ static int do_swap_page(struct mm_struct * mm,
 
 	pte_unmap(page_table);
 	spin_unlock(&mm->page_table_lock);
+again:
 	page = lookup_swap_cache(entry);
 	if (!page) {
  		swapin_readahead(entry, address, vma);
@@ -1693,6 +1785,21 @@ static int do_swap_page(struct mm_struct * mm,
 
 	mark_page_accessed(page);
 	lock_page(page);
+
+	if (!PageSwapCache(page)) {
+		/* page remapping has occured */
+		unlock_page(page);
+		page_cache_release(page);
+		goto again;
+	}
+
+	if (PageAgain(page)) {
+		unlock_page(page);
+		page_cache_release(page);
+		goto again;
+	}
+	BUG_ON(PageAgain(page));
+
 
 	/*
 	 * Back out if somebody else faulted in this pte while we
@@ -1725,6 +1832,8 @@ static int do_swap_page(struct mm_struct * mm,
 	unlock_page(page);
 
 	flush_icache_page(vma, page);
+	if (!(vma->vm_flags & VM_EXEC))
+		flush_data_cache_page(page_address(page));
 	set_pte_at(mm, address, page_table, pte);
 	page_add_anon_rmap(page, vma, address);
 
@@ -1868,7 +1977,7 @@ retry:
 
 		if (unlikely(anon_vma_prepare(vma)))
 			goto oom;
-		page = alloc_page_vma(GFP_HIGHUSER, vma, address);
+		page = alloc_page_vma(GFP_DVRUSER, vma, address);
 		if (!page)
 			goto oom;
 		copy_user_highpage(page, new_page, address);
@@ -1907,6 +2016,8 @@ retry:
 			inc_mm_counter(mm, rss);
 
 		flush_icache_page(vma, new_page);
+		if (!(vma->vm_flags & VM_EXEC))
+			flush_data_cache_page(page_address(new_page));
 		entry = mk_pte(new_page, vma->vm_page_prot);
 		if (write_access)
 			entry = maybe_mkwrite(pte_mkdirty(entry), vma);

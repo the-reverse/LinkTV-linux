@@ -38,6 +38,17 @@
 
 #define USB_INTERFACE_CLASS_HID		3
 
+// +++ cyhuang (2011/3/8)
+// cyhuang : Copy from <linux-2.6.34/include/linux/hid.h>
+/*
+ * USB HID interface subclass and protocol codes
+ */
+
+#define USB_INTERFACE_SUBCLASS_BOOT 1
+#define USB_INTERFACE_PROTOCOL_KEYBOARD 1
+#define USB_INTERFACE_PROTOCOL_MOUSE    2
+// +++ cyhuang (2011/3/8)
+
 /*
  * HID class requests
  */
@@ -267,7 +278,7 @@ struct hid_global {
  */
 
 #define HID_MAX_DESCRIPTOR_SIZE		4096
-#define HID_MAX_USAGES			1024
+#define HID_MAX_USAGES			12288
 #define HID_DEFAULT_NUM_COLLECTIONS	16
 
 struct hid_local {

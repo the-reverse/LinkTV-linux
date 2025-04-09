@@ -325,6 +325,10 @@ static void pci_device_shutdown(struct device *dev)
 
 	if (drv && drv->shutdown)
 		drv->shutdown(pci_dev);
+
+#ifdef CONFIG_PCI_REMOVE_DEVICE_BEFORE_SHOTDOWN
+	pci_device_remove(dev);
+#endif
 }
 
 #define kobj_to_pci_driver(obj) container_of(obj, struct device_driver, kobj)
@@ -396,7 +400,7 @@ int pci_register_driver(struct pci_driver *drv)
 	/* FIXME, once all of the existing PCI drivers have been fixed to set
 	 * the pci shutdown function, this test can go away. */
 	if (!drv->driver.shutdown)
-		drv->driver.shutdown = pci_device_shutdown,
+		drv->driver.shutdown = pci_device_shutdown;
 	drv->driver.owner = drv->owner;
 	drv->driver.kobj.ktype = &pci_driver_kobj_type;
 	pci_init_dynids(&drv->dynids);
@@ -525,6 +529,7 @@ struct bus_type pci_bus_type = {
 	.suspend	= pci_device_suspend,
 	.resume		= pci_device_resume,
 	.dev_attrs	= pci_dev_attrs,
+	.bus_attrs	= pci_bus_attrs,
 };
 
 static int __init pci_driver_init(void)

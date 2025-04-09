@@ -290,9 +290,12 @@ static unsigned long elf_map(struct file *filep, unsigned long addr,
 	unsigned long map_addr;
 
 	down_write(&current->mm->mmap_sem);
-	map_addr = do_mmap(filep, ELF_PAGESTART(addr),
-			   eppnt->p_filesz + ELF_PAGEOFFSET(eppnt->p_vaddr), prot, type,
-			   eppnt->p_offset - ELF_PAGEOFFSET(eppnt->p_vaddr));
+        if (eppnt->p_filesz + ELF_PAGEOFFSET(eppnt->p_vaddr))
+            map_addr = do_mmap(filep, ELF_PAGESTART(addr),
+                               eppnt->p_filesz + ELF_PAGEOFFSET(eppnt->p_vaddr), prot, type,
+                               eppnt->p_offset - ELF_PAGEOFFSET(eppnt->p_vaddr));
+        else
+            map_addr = ELF_PAGESTART(addr);
 	up_write(&current->mm->mmap_sem);
 	return(map_addr);
 }

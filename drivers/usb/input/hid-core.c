@@ -761,7 +761,7 @@ static __inline__ __u32 s32ton(__s32 value, unsigned n)
 /*
  * Extract/implement a data field from/to a report.
  */
-
+/*
 static __inline__ __u32 extract(__u8 *report, unsigned offset, unsigned n)
 {
 	report += (offset >> 5) << 2; offset &= 31;
@@ -774,6 +774,37 @@ static __inline__ void implement(__u8 *report, unsigned offset, unsigned n, __u3
 	put_unaligned((get_unaligned((__le64*)report)
 		& cpu_to_le64(~((((__u64) 1 << n) - 1) << offset)))
 		| cpu_to_le64((__u64)value << offset), (__le64*)report);
+}
+*/
+
+/* cyhuang (2011/2/1) : Patch hid-core data parser bug. */
+/*
+ * Extract/implement a data field from/to a report.
+ * Extract/implement a data field from/to a little endian report (bit array).
+ */
+ 
+static __inline__ __u32 extract(__u8 *report, unsigned offset, unsigned n)
+{ 
+    u32 x;
+
+    report += offset >> 3;  /* adjust byte index */
+    offset &= 8 - 1;
+    x = get_unaligned((u32 *) report);
+    x = le32_to_cpu(x);
+    x = (x >> offset) & ((1 << n) - 1);
+    return x;
+}
+ 
+static __inline__ void implement(__u8 *report, unsigned offset, unsigned n, __u32 value)
+{
+    u32 x;
+
+    report += offset >> 3;
+    offset &= 8 - 1;
+    x = get_unaligned((u32 *)report);
+    x &= cpu_to_le32(~((((__u32) 1 << n) - 1) << offset));
+    x |= cpu_to_le32(value << offset);
+    put_unaligned(x,(u32 *)report);
 }
 
 /*
@@ -925,6 +956,7 @@ static void hid_irq_in(struct urb *urb, struct pt_regs *regs)
 		case -EPERM:
 		case -ESHUTDOWN:	/* unplug */
 		case -EILSEQ:		/* unplug timeout on uhci */
+		case -EPROTO:		/* protocol error or unplug */
 			return;
 		case -ETIMEDOUT:	/* NAK */
 			break;
@@ -1570,6 +1602,21 @@ static struct hid_device *usb_hid_configure(struct usb_interface *intf)
 	if (quirks & HID_QUIRK_IGNORE)
 		return NULL;
 
+// +++ cyhuang (2011/3/8)
+/* cyhuang : (Fix Bug#0024991) 
+ *          Device : Microsoft SideWinder X3 Mouse.        
+ *          Set HID_QUIRK_NOGET flag for HID keyboard/mouse to avoid submit get report urb request. (hid_submit_report())
+ */
+             
+    /* Many keyboards and mice don't like to be polled for reports,
+     * so we will always set the HID_QUIRK_NOGET flag for them. */
+    if (interface->desc.bInterfaceSubClass == USB_INTERFACE_SUBCLASS_BOOT) {
+        if (interface->desc.bInterfaceProtocol == USB_INTERFACE_PROTOCOL_KEYBOARD ||
+            interface->desc.bInterfaceProtocol == USB_INTERFACE_PROTOCOL_MOUSE)
+                quirks |= HID_QUIRK_NOGET;
+    }
+// +++ cyhuang (2011/3/8)
+
 	if (usb_get_extra_descriptor(interface, HID_DT_HID, &hdesc) && ((!interface->desc.bNumEndpoints) ||
 		usb_get_extra_descriptor(&interface->endpoint[0], HID_DT_HID, &hdesc))) {
 			dbg("class descriptor not present\n");
@@ -1728,9 +1775,22 @@ fail:
 static void hid_disconnect(struct usb_interface *intf)
 {
 	struct hid_device *hid = usb_get_intfdata (intf);
+	int i;
 
 	if (!hid)
 		return;
+
+	for (i = 0; i < hid->maxcollection; i++) {
+		if (hid->collection[i].type == HID_COLLECTION_APPLICATION &&
+		    (hid->collection[i].usage & HID_USAGE_PAGE) == HID_UP_GENDESK &&
+		    (hid->collection[i].usage & 0xffff) < ARRAY_SIZE(hid_types)) {
+			if((hid->collection[i].usage & 0xffff) == 2) // mouse
+				kobject_hotplug(&hid->dev->dev.kobj, KOBJ_USBMICE_DOWN);
+			if((hid->collection[i].usage & 0xffff) == 6) // keyboard
+				kobject_hotplug(&hid->dev->dev.kobj, KOBJ_USBKBD_DOWN);
+			break;
+		}
+	}
 
 	usb_set_intfdata(intf, NULL);
 	usb_kill_urb(hid->urbin);
@@ -1795,6 +1855,10 @@ static int hid_probe(struct usb_interface *intf, const struct usb_device_id *id)
 		    (hid->collection[i].usage & HID_USAGE_PAGE) == HID_UP_GENDESK &&
 		    (hid->collection[i].usage & 0xffff) < ARRAY_SIZE(hid_types)) {
 			c = hid_types[hid->collection[i].usage & 0xffff];
+			if((hid->collection[i].usage & 0xffff) == 2) // mouse
+				kobject_hotplug(&hid->dev->dev.kobj, KOBJ_USBMICE_UP);
+			if((hid->collection[i].usage & 0xffff) == 6) // keyboard
+				kobject_hotplug(&hid->dev->dev.kobj, KOBJ_USBKBD_UP);
 			break;
 		}
 	}

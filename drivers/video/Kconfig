@@ -38,6 +38,17 @@ config FB
 	  (e.g. an accelerated X server) and that are not frame buffer
 	  device-aware may cause unexpected results. If unsure, say N.
 
+config VENUS_FB
+	tristate "VENUS Frame Buffer Support"
+	depends on FB 
+	select FB_CFB_FILLRECT
+	select FB_CFB_COPYAREA
+	select FB_CFB_IMAGEBLIT
+	select FB_SOFT_CURSOR
+	default  n
+	---help---
+	  Frame buffer driver for Realtek Venus/Neptune/Mars media processor family
+
 config FB_CFB_FILLRECT
 	tristate
 	depends on FB
@@ -107,6 +118,31 @@ config FB_TILEBLITTING
 
 	 This is particularly important to one driver, matroxfb.  If
 	 unsure, say N.
+
+menuconfig FB_FOREIGN_ENDIAN
+	bool "Framebuffer foreign endianness support"
+	depends on FB
+	---help---
+	  This menu will let you enable support for the framebuffers with
+	  non-native endianness (e.g. Little-Endian framebuffer on a
+	  Big-Endian machine). Most probably you don't have such hardware,
+	  so it's safe to say "n" here.
+
+if FB_FOREIGN_ENDIAN
+
+choice
+	prompt "Choice endianness support"
+	depends on FB_FOREIGN_ENDIAN
+
+config FB_BIG_ENDIAN
+	bool "Support for Big-Endian framebuffers only"
+
+config FB_LITTLE_ENDIAN
+	bool "Support for Little-Endian framebuffers only"
+
+endchoice
+
+endif
 
 config FB_CIRRUS
 	tristate "Cirrus Logic support"
@@ -1459,6 +1495,13 @@ config FB_W100
 	  say M here and read <file:Documentation/modules.txt>.
 
 	  If unsure, say N.
+
+
+
+
+
+
+
 
 config FB_PXA_PARAMETERS
 	bool "PXA LCD command line parameters"

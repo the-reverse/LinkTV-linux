@@ -219,16 +219,64 @@
  */
 static struct list_head audiodevs = LIST_HEAD_INIT(audiodevs);
 static DECLARE_MUTEX(open_sem);
+static DECLARE_WAIT_QUEUE_HEAD(open_wait);
 
 /*
  * wait queue for processes wanting to open an USB audio device
  */
-static DECLARE_WAIT_QUEUE_HEAD(open_wait);
-
-
 #define MAXFORMATS        MAX_ALT
 #define DMABUFSHIFT       17  /* 128k worth of DMA buffer */
 #define NRSGBUF           (1U<<(DMABUFSHIFT-PAGE_SHIFT))
+
+#ifdef CONFIG_USB_AUDIO_IN_THREAD
+typedef struct {
+	long base;
+	long limit;
+	long cp;
+	long rp;
+	long wp;
+} AUDIO_RINGBUF_PTR;
+
+#ifdef CONFIG_USBAUDIO_TEST_THREAD_WO_IOCTL
+	#define USBAUDIO_TEST_THREAD_WO_IOCTL
+#endif /**/
+#ifdef USBAUDIO_TEST_THREAD_WO_IOCTL
+	#define USBAUDIO_TEST_THREAD_WO_IOCTL_IN_TO_OUT
+#endif /* USBAUDIO_TEST_THREAD_WO_IOCTL */
+#define IOCTL_FOR_IN_OUT_SAMPLING_RATE
+
+static int AudioIn_thread(void * __as);
+static int AudioOut_thread(void * __as);
+static pid_t AudioIn_pid = 0;
+static pid_t AudioOut_pid = 0;
+static int audio_ringbuf_ready = 0;
+static int loop_times = 0;
+static int cached_limit = 0;
+static int cached_base = 0;
+static DECLARE_COMPLETION(AudioIn_exited);
+static DECLARE_COMPLETION(AudioOut_exited);
+static AUDIO_RINGBUF_PTR *audio_ringbuf_ptr;
+//static spinlock_t audio_lock;
+static int audio_in_thread_mute = 0;
+#ifndef USBAUDIO_TEST_THREAD_WO_IOCTL
+static DECLARE_WAIT_QUEUE_HEAD(AudioIn_wait);
+static DECLARE_WAIT_QUEUE_HEAD(AudioOut_wait);
+static int AudioIn_thread_flag = 0;
+static int AudioOut_thread_flag = 0;
+#endif  /* ! USBAUDIO_TEST_THREAD_WO_IOCTL */
+
+#define FW_DMABUFSHIFT    14  /* 14 is for 16k worth of DMA buffer */
+#define FW_NRSPAGE        (1U << (FW_DMABUFSHIFT -PAGE_SHIFT))
+
+#ifdef CONFIG_REALTEK_RPC
+	#include <linux/RPCDriver.h>
+	#include "audio_rpc.h"
+#endif
+#endif /* CONFIG_USB_AUDIO_IN_THREAD */
+
+static struct usb_device *sysfs_add_group_usbdev = NULL;
+static struct device *sysfs_add_group_dev = NULL;
+static int gpio_num = 0;
 
 /*
  * This influences:
@@ -331,6 +379,7 @@ struct usb_audiodev {
 		struct my_sync_urb surb[2];  /* ISO sync pipe descriptor if needed */
 		
 		struct dmabuf dma;
+		int for_fw;
 	} usbin;
 
 	struct usbout {
@@ -349,12 +398,20 @@ struct usb_audiodev {
 		struct my_sync_urb surb[2];  /* ISO sync pipe descriptor if needed */
 		
 		struct dmabuf dma;
+		int for_fw;
 	} usbout;
 
 
 	unsigned int numfmtin, numfmtout;
 	struct audioformat fmtin[MAXFORMATS];
 	struct audioformat fmtout[MAXFORMATS];
+
+#ifdef IOCTL_FOR_IN_OUT_SAMPLING_RATE 
+	int usb_audio_in_sampling_rate_size;
+	int usb_audio_out_sampling_rate_size;
+	unsigned int usb_audio_in_sampling_rate_array[32];
+	unsigned int usb_audio_out_sampling_rate_array[32];
+#endif /* IOCTL_FOR_IN_OUT_SAMPLING_RATE */
 };  
 
 struct usb_mixerdev {
@@ -432,6 +489,48 @@ static inline unsigned ld2(unsigned int x)
  * (though only one indirection) in software.
  */
 
+#ifdef CONFIG_USB_AUDIO_IN_THREAD
+static void dmabuf_release_for_fw(struct dmabuf *db)
+{
+	unsigned int nr;
+	void *p;
+	int order = 0, pages = FW_NRSPAGE;
+	unsigned long flags;
+
+	//spin_lock_irqsave(&audio_lock, flags);
+	if(audio_ringbuf_ready == 0) {
+		printk("#######[cfyeh-debug] %s(%d) audio_ringbuf_ready %d\n", __func__, __LINE__, audio_ringbuf_ready);
+	} else {
+	printk("#######[cfyeh-debug] %s(%d) audio_ringbuf_ready %d\n", __func__, __LINE__, audio_ringbuf_ready);
+	audio_ringbuf_ready = 0;
+	printk("#######[cfyeh-debug] %s(%d) audio_ringbuf_ready %d\n", __func__, __LINE__, audio_ringbuf_ready);
+
+	while(pages != 1) {
+		pages = pages >> 1;
+		order++;
+	}
+	pages = FW_NRSPAGE;
+	for(nr = 0; nr < NRSGBUF; nr++) {
+		if (!(p = db->sgbuf[nr]))
+			continue;
+		printk("#######[cfyeh-debug] %s(%d) p 0x%.8x\n", __func__, __LINE__, p);
+		free_pages((unsigned long)p, order);
+		db->sgbuf[nr] = NULL;
+	}
+	wmb();
+	cached_base = cached_limit = audio_ringbuf_ptr->base = audio_ringbuf_ptr->limit = 0;
+	audio_ringbuf_ptr->rp = audio_ringbuf_ptr->wp = 0;
+	wmb();
+	printk("#######[cfyeh-debug] %s(%d) r 0x%.8x w 0x%.8x b 0x%.8x(0x%.8x) l 0x%.8x(0x%.8x)\n", __func__, __LINE__, audio_ringbuf_ptr->rp, audio_ringbuf_ptr->wp, audio_ringbuf_ptr->base, cached_base, audio_ringbuf_ptr->limit, cached_limit);
+	db->mapped = db->ready = 0;
+	kfree(KSEG0ADDR(audio_ringbuf_ptr));
+	audio_ringbuf_ptr = NULL;
+	printk("#######[cfyeh-debug] %s(%d) audio_ringbuf_ptr %p %p\n", __func__, __LINE__, audio_ringbuf_ptr, &audio_ringbuf_ptr);
+	}
+	//spin_unlock_irqrestore(&audio_lock, flags);
+}
+#endif /* CONFIG_USB_AUDIO_IN_THREAD */
+
 static void dmabuf_release(struct dmabuf *db)
 {
 	unsigned int nr;
@@ -446,6 +545,94 @@ static void dmabuf_release(struct dmabuf *db)
 	}
 	db->mapped = db->ready = 0;
 }
+
+#ifdef CONFIG_USB_AUDIO_IN_THREAD
+static int init_ringbuf_for_fw(void)
+{
+	void *p;
+	int order = 0, pages = FW_NRSPAGE;
+	unsigned long flags;
+
+	//spin_lock_irqsave(&audio_lock, flags);
+	if(audio_ringbuf_ready == 0) { // audio_ringbuf_ptr is not ready yet
+		printk("#######[cfyeh-debug] %s(%d) audio_ringbuf_ready %d\n", __func__, __LINE__, audio_ringbuf_ready);
+		audio_ringbuf_ready = 1;
+		printk("#######[cfyeh-debug] %s(%d) audio_ringbuf_ready %d\n", __func__, __LINE__, audio_ringbuf_ready);
+		loop_times = 0;
+		audio_ringbuf_ptr = KSEG1ADDR(kmalloc(sizeof(AUDIO_RINGBUF_PTR), GFP_KERNEL));
+		printk("#######[cfyeh-debug] %s(%d) audio_ringbuf_ptr %p %p\n", __func__, __LINE__, audio_ringbuf_ptr, &audio_ringbuf_ptr);
+		// alloc continous memory
+		while(pages != 1) {
+			pages = pages >> 1;
+			order++;
+		}
+		pages = FW_NRSPAGE;
+		p = (void *)__get_dma_pages(GFP_KERNEL, order);
+		if (!p) {
+			//spin_unlock_irqrestore(&audio_lock, flags);
+			return -ENOMEM;
+		}
+		memset(audio_ringbuf_ptr->base, 0, (1U << FW_DMABUFSHIFT));
+		wmb();
+		cached_base = audio_ringbuf_ptr->base = audio_ringbuf_ptr->rp = audio_ringbuf_ptr->wp = KSEG1ADDR(p);
+		cached_limit = audio_ringbuf_ptr->limit = audio_ringbuf_ptr->base + (1U << FW_DMABUFSHIFT);
+		wmb();
+		printk("#######[cfyeh-debug] %s(%d) r 0x%.8x w 0x%.8x b 0x%.8x(0x%.8x) l 0x%.8x(0x%.8x)\n", __func__, __LINE__, audio_ringbuf_ptr->rp, audio_ringbuf_ptr->wp, audio_ringbuf_ptr->base, cached_base, audio_ringbuf_ptr->limit, cached_limit);
+	} else {
+		printk("#######[cfyeh-debug] %s(%d) audio_ringbuf_ready %d\n", __func__, __LINE__, audio_ringbuf_ready);
+	}
+	//spin_unlock_irqrestore(&audio_lock, flags);
+
+	return 0;
+}
+
+static int dmabuf_init_for_fw(struct dmabuf *db)
+{
+	unsigned int bytepersec, bufs;
+	int ret;
+	unsigned int nr;
+
+		printk("#######[cfyeh-debug] %s(%d)\n", __func__, __LINE__);
+	if((ret = init_ringbuf_for_fw()))
+		return ret;
+
+	/* initialize some fields */
+	db->rdptr = db->wrptr = db->total_bytes = db->count = db->error = 0;
+	/* calculate required buffer size */
+	bytepersec = db->srate << AFMT_BYTESSHIFT(db->format);
+	bufs = 1U << FW_DMABUFSHIFT;
+	if (db->ossfragshift) {
+		if ((1000 << db->ossfragshift) < bytepersec)
+			db->fragshift = ld2(bytepersec/1000);
+		else
+			db->fragshift = db->ossfragshift;
+	} else {
+		db->fragshift = ld2(bytepersec/100/(db->subdivision ? db->subdivision : 1));
+		if (db->fragshift < 3)
+			db->fragshift = 3;
+	}
+	db->numfrag = bufs >> db->fragshift;
+	while (db->numfrag < 4 && db->fragshift > 3) {
+		db->fragshift--;
+		db->numfrag = bufs >> db->fragshift;
+	}
+	db->fragsize = 1 << db->fragshift;
+	if (db->ossmaxfrags >= 4 && db->ossmaxfrags < db->numfrag)
+		db->numfrag = db->ossmaxfrags;
+	db->dmasize = db->numfrag << db->fragshift;
+	db->sgbuf[0] = KSEG0ADDR(audio_ringbuf_ptr->base);
+	db->bufsize = bufs;
+	db->ready = 1;
+	for(nr = 1; nr < NRSGBUF; nr++)
+		db->sgbuf[nr] = 0;
+
+	dprintk((KERN_DEBUG "usbaudio: dmabuf_init bytepersec %d bufs %d ossfragshift %d ossmaxfrags %d "
+	         "fragshift %d fragsize %d numfrag %d dmasize %d bufsize %d fmt 0x%x srate %d\n",
+	         bytepersec, bufs, db->ossfragshift, db->ossmaxfrags, db->fragshift, db->fragsize,
+	         db->numfrag, db->dmasize, db->bufsize, db->format, db->srate));
+	return 0;
+}
+#endif /* CONFIG_USB_AUDIO_IN_THREAD */
 
 static int dmabuf_init(struct dmabuf *db)
 {
@@ -542,6 +729,86 @@ static void dmabuf_copyin(struct dmabuf *db, const void *buffer, unsigned int si
 	}
 }
 
+#ifdef CONFIG_USB_AUDIO_IN_THREAD
+#define LOOP_TIMES_DEFINE	(1000)
+//static int ringbuf_full = 0;
+static void dmabuf_copyin_for_fw(struct dmabuf *db, const void *buffer, unsigned int size)
+{
+	unsigned int pgrem, rem;
+	long rp;
+	volatile long *rp_ptr;
+	//int tmp = 0;
+
+#if 0
+	if(AudioIn_thread_flag == 1) {
+		tmp = 1;
+		AudioIn_thread_flag++;
+		printk("#######[cfyeh-debug] %s(%d) 1st pts 0x%.8x%.8x\n", __func__, __LINE__, readl((unsigned int*)0xb801b544), readl((unsigned int*)0xb801b540));
+	}
+#endif
+	db->total_bytes += size;
+	for (;;) {
+		if (size <= 0) {
+#if 0
+				if(tmp == 1) {
+						printk("#######[cfyeh-debug] %s(%d) 1st pts 0x%.8x%.8x\n", __func__, __LINE__, readl((unsigned int*)0xb801b544), readl((unsigned int*)0xb801b540));
+				}
+#endif
+#if 0
+			if(ringbuf_full)
+				printk("#######[cfyeh-debug] %s(%d) pts 0x%.8x%.8x ringbuf_full 0x%x\n", __func__, __LINE__, readl((unsigned int*)0xb801b544), readl((unsigned int*)0xb801b540), ringbuf_full);
+			ringbuf_full = 0;
+#endif
+			return;
+		}
+		pgrem = size;
+		rem = cached_limit - audio_ringbuf_ptr->wp;
+		if (pgrem > rem)
+			pgrem = rem;
+		// check overlap
+		rp_ptr = &(audio_ringbuf_ptr->rp);
+		//rp = audio_ringbuf_ptr->rp;
+		rp = (unsigned long)*rp_ptr;
+		if(rp == cached_base)
+			rp = cached_limit;
+		if((audio_ringbuf_ptr->wp < rp) && ((audio_ringbuf_ptr->wp + pgrem) >= rp)) {
+			loop_times++;
+			if((loop_times % LOOP_TIMES_DEFINE) == 1)
+				printk("#######[cfyeh-debug] %s(%d) %d pts 0x%.8x%.8x r 0x%.8x w 0x%.8x s 0x%x t 0x%x\n", __func__, __LINE__, loop_times, readl((unsigned int*)0xb801b544), readl((unsigned int*)0xb801b540), rp, audio_ringbuf_ptr->wp, pgrem, db->total_bytes);
+#if 0
+				if(tmp == 1) {
+						printk("#######[cfyeh-debug] %s(%d) 1st pts 0x%.8x%.8x\n", __func__, __LINE__, readl((unsigned int*)0xb801b544), readl((unsigned int*)0xb801b540));
+				}
+#endif
+			//ringbuf_full += pgrem;
+			return;
+		}
+		if(audio_in_thread_mute)
+				memset(audio_ringbuf_ptr->wp, 0, pgrem);
+		else
+				memcpy(audio_ringbuf_ptr->wp, buffer, pgrem);
+		size -= pgrem;
+		buffer += pgrem;
+#ifdef USBAUDIO_TEST_THREAD_WO_IOCTL
+		db->wrptr += pgrem;
+		if (db->wrptr >= db->dmasize)
+			db->wrptr = 0;
+#endif  /* USBAUDIO_TEST_THREAD_WO_IOCTL */
+		if((audio_ringbuf_ptr->wp + pgrem) >= cached_limit) {
+			audio_ringbuf_ptr->wp = cached_base;
+#if 0
+				if(AudioIn_thread_flag == 2) {
+						AudioIn_thread_flag++;
+						printk("#######[cfyeh-debug] %s(%d) 1st pts 0x%.8x%.8x\n", __func__, __LINE__, readl((unsigned int*)0xb801b544), readl((unsigned int*)0xb801b540));
+				}
+#endif
+		} else {
+			audio_ringbuf_ptr->wp += pgrem;
+		} 
+	}
+}
+#endif /* CONFIG_USB_AUDIO_IN_THREAD */
+
 static void dmabuf_copyout(struct dmabuf *db, void *buffer, unsigned int size)
 {
 	unsigned int pgrem, rem;
@@ -589,6 +856,40 @@ static int dmabuf_copyin_user(struct dmabuf *db, unsigned int ptr, const void __
 			ptr = 0;
 	}
 }
+
+#ifdef CONFIG_USB_AUDIO_IN_THREAD
+static int dmabuf_copyin_ringbuf_for_fw(struct dmabuf *db, unsigned int ptr, unsigned int size)
+{
+	unsigned int pgrem, rem, tmp_wp;
+
+	for (;;) {
+		if(audio_ringbuf_ptr->rp == 0) {
+			return -ENODEV;
+		}
+		if (size <= 0) {
+			return 0;
+		}
+		pgrem = ((~ptr) & (PAGE_SIZE-1)) + 1;
+		if (pgrem > size)
+			pgrem = size;
+		rem = db->dmasize - ptr;
+		if (pgrem > rem)
+			pgrem = rem;
+		tmp_wp = audio_ringbuf_ptr->wp;
+		rem =(tmp_wp > audio_ringbuf_ptr->rp) ? (tmp_wp - audio_ringbuf_ptr->rp) : (cached_limit - audio_ringbuf_ptr->rp);
+		if (pgrem > rem)
+			pgrem = rem;
+		memcpy((db->sgbuf[ptr >> PAGE_SHIFT]) + (ptr & (PAGE_SIZE-1)), audio_ringbuf_ptr->rp, pgrem);
+		size -= pgrem;
+		ptr += pgrem;
+		if (ptr >= db->dmasize)
+			ptr = 0;
+		audio_ringbuf_ptr->rp += pgrem;
+		if (audio_ringbuf_ptr->rp >= cached_limit)
+			audio_ringbuf_ptr->rp = cached_base;
+	}
+}
+#endif /* CONFIG_USB_AUDIO_IN_THREAD */
 
 static int dmabuf_copyout_user(struct dmabuf *db, unsigned int ptr, void __user *buffer, unsigned int size)
 {
@@ -813,7 +1114,12 @@ static void usbin_convert(struct usbin *u, unsigned char *buffer, unsigned int s
 		if (scnt > maxs)
 			scnt = maxs;
 		conversion(buffer, u->format, tmp.b, u->dma.format, tmp.b, scnt);
-		dmabuf_copyin(&u->dma, tmp.b, scnt << dfmtsh);
+#ifdef CONFIG_USB_AUDIO_IN_THREAD
+		if(u->for_fw)
+			dmabuf_copyin_for_fw(&u->dma, tmp.b, scnt << dfmtsh);
+		else
+#endif /* CONFIG_USB_AUDIO_IN_THREAD */
+			dmabuf_copyin(&u->dma, tmp.b, scnt << dfmtsh);
 		buffer += scnt << ufmtsh;
 		samples -= scnt;
 	}
@@ -866,7 +1172,12 @@ static int usbin_retire_desc(struct usbin *u, struct urb *urb)
 		if (u->format == u->dma.format) {
 			/* we do not need format conversion */
 			dprintk((KERN_DEBUG "usbaudio: no sample format conversion\n"));
-			dmabuf_copyin(&u->dma, cp, cnt);
+#ifdef CONFIG_USB_AUDIO_IN_THREAD
+			if(u->for_fw)
+				dmabuf_copyin_for_fw(&u->dma, cp, cnt);
+			else
+#endif /* CONFIG_USB_AUDIO_IN_THREAD */
+				dmabuf_copyin(&u->dma, cp, cnt);
 		} else {
 			/* we need sampling format conversion */
 			dprintk((KERN_DEBUG "usbaudio: sample format conversion %x != %x\n", u->format, u->dma.format));
@@ -1899,7 +2210,13 @@ static void release(struct usb_audio_state *s)
 		list_del(&as->list);
 		usbin_release(as);
 		usbout_release(as);
-		dmabuf_release(&as->usbin.dma);
+#ifdef CONFIG_USB_AUDIO_IN_THREAD
+		printk("#######[cfyeh-debug] %s(%d)\n", __func__, __LINE__);
+		if(as->usbin.for_fw)
+			dmabuf_release_for_fw(&as->usbin.dma);
+		else
+#endif /* CONFIG_USB_AUDIO_IN_THREAD */
+			dmabuf_release(&as->usbin.dma);
 		dmabuf_release(&as->usbout.dma);
 		usb_free_urb(as->usbin.durb[0].urb);
 		usb_free_urb(as->usbin.durb[1].urb);
@@ -1919,15 +2236,26 @@ static void release(struct usb_audio_state *s)
 	kfree(s);
 }
 
+#ifdef CONFIG_USB_AUDIO_IN_THREAD
+static inline int prog_dmabuf_in_for_fw(struct usb_audiodev *as)
+{
+	usbin_stop(as);
+	as->usbin.for_fw = 1;
+	return dmabuf_init_for_fw(&as->usbin.dma);
+}
+#endif /* CONFIG_USB_AUDIO_IN_THREAD */
+
 static inline int prog_dmabuf_in(struct usb_audiodev *as)
 {
 	usbin_stop(as);
+	as->usbin.for_fw = 0;
 	return dmabuf_init(&as->usbin.dma);
 }
 
 static inline int prog_dmabuf_out(struct usb_audiodev *as)
 {
 	usbout_stop(as);
+	as->usbout.for_fw = 0;
 	return dmabuf_init(&as->usbout.dma);
 }
 
@@ -2343,6 +2671,17 @@ static int usb_audio_ioctl(struct inode *inode, struct file *file, unsigned int 
 	count_info cinfo;
 	int val = 0;
 	int val2, mapped, ret;
+#ifdef IOCTL_FOR_IN_OUT_SAMPLING_RATE 
+	valid_sample_info sinfo;
+#endif /* IOCTL_FOR_IN_OUT_SAMPLING_RATE */
+#ifdef CONFIG_USB_AUDIO_IN_THREAD
+#ifndef USBAUDIO_TEST_THREAD_WO_IOCTL
+	pid_t pid = 0;
+	USB_AUDIO_IN_INFO structAudioInCommand;
+	int i, j;
+	unsigned long tmp;
+#endif  /* ! USBAUDIO_TEST_THREAD_WO_IOCTL */
+#endif /* CONFIG_USB_AUDIO_IN_THREAD */
 
 	if (!s->usbdev)
 		return -EIO;
@@ -2605,6 +2944,237 @@ static int usb_audio_ioctl(struct inode *inode, struct file *file, unsigned int 
 		val2 = (file->f_mode & FMODE_READ) ? as->usbin.dma.format : as->usbout.dma.format;
 		return put_user(AFMT_IS16BIT(val2) ? 16 : 8, user_arg);
 
+#ifdef IOCTL_FOR_IN_OUT_SAMPLING_RATE 
+	case SNDCTL_DSP_VALID_SAMPLE:
+		if (get_user(val, user_arg))
+			return -EFAULT;
+		if(val == VALID_SAMPLE_INPUT) {
+			sinfo.cmd = VALID_SAMPLE_INPUT;
+			sinfo.size = as->usb_audio_in_sampling_rate_size;
+			memcpy(sinfo.sample, as->usb_audio_in_sampling_rate_array, sizeof(sinfo.sample)); 
+		} else {
+			sinfo.cmd = VALID_SAMPLE_OUTPUT;
+			sinfo.size = as->usb_audio_out_sampling_rate_size;
+			memcpy(sinfo.sample, as->usb_audio_out_sampling_rate_array, sizeof(sinfo.sample)); 
+		}
+		return (copy_to_user(user_arg, &sinfo, sizeof(sinfo)));
+#endif /* IOCTL_FOR_IN_OUT_SAMPLING_RATE */
+
+#ifdef CONFIG_USB_AUDIO_IN_THREAD
+#ifndef USBAUDIO_TEST_THREAD_WO_IOCTL
+	case SNDCTL_AUDIO_FW_THREAD:
+		if (copy_from_user(&structAudioInCommand, user_arg, sizeof(structAudioInCommand)))
+			return -EFAULT;
+		if(sysfs_add_group_usbdev != as->state->usbdev)
+			return -EFAULT;
+		switch(structAudioInCommand.command) {
+			case ENUM_USB_AUDIO_IN_CMD_DISCONNECT:
+#ifdef CONFIG_REALTEK_RPC
+				UsbAudioInThreadStatus(s, structAudioInCommand.command, NULL);
+#endif /* CONFIG_REALTEK_RPC */
+				break;
+			case ENUM_USB_AUDIO_IN_CMD_CONNECT:
+#ifdef CONFIG_REALTEK_RPC
+				UsbAudioInThreadStatus(s, structAudioInCommand.command, NULL);
+#endif /* CONFIG_REALTEK_RPC */
+				break;
+			case ENUM_USB_AUDIO_IN_CMD_STOP:
+printk("#######[cfyeh-debug] %s(%d) ENUM_USB_AUDIO_IN_CMD_STOP\n", __func__, __LINE__);
+				AudioIn_thread_flag = 0;
+#ifdef CONFIG_REALTEK_RPC
+				UsbAudioInThreadStatus(s, structAudioInCommand.command, NULL);
+#endif /* CONFIG_REALTEK_RPC */
+				break;
+			case ENUM_USB_AUDIO_IN_CMD_START:
+printk("#######[cfyeh-debug] %s(%d) ENUM_USB_AUDIO_IN_CMD_START\n", __func__, __LINE__);
+#if 1
+		printk("#######[cfyeh-debug] %s(%d)\n", __func__, __LINE__);
+				if((ret = init_ringbuf_for_fw()))
+					return ret;
+
+				wmb();
+				audio_ringbuf_ptr->rp = audio_ringbuf_ptr->wp = audio_ringbuf_ptr->base = cached_base;
+				audio_ringbuf_ptr->limit = cached_limit;
+				wmb();
+					
+				// structAudioInCommand.usb_ai_ringbuf_addr
+				structAudioInCommand.usb_ai_ringbuf_addr = audio_ringbuf_ptr;
+
+				if(!AudioIn_pid) {
+					pid = kernel_thread(AudioIn_thread, as, CLONE_KERNEL);
+					if (pid >= 0) {
+						AudioIn_pid = pid;
+					}
+				}
+#endif
+				AudioIn_thread_flag = 1;
+				wake_up(&AudioIn_wait);
+#ifdef CONFIG_REALTEK_RPC
+				UsbAudioInThreadStatus(s, structAudioInCommand.command, NULL);
+#endif /* CONFIG_REALTEK_RPC */
+				break;
+			case ENUM_USB_AUDIO_IN_CMD_GETINFO:
+printk("#######[cfyeh-debug] %s(%d) ENUM_USB_AUDIO_IN_CMD_GETINFO\n", __func__, __LINE__);
+#if 1
+		printk("#######[cfyeh-debug] %s(%d)\n", __func__, __LINE__);
+				if((ret = init_ringbuf_for_fw()))
+					return ret;
+				if(!AudioIn_pid) {
+					pid = kernel_thread(AudioIn_thread, as, CLONE_KERNEL);
+					if (pid >= 0) {
+						AudioIn_pid = pid;
+					}
+				}
+#endif
+
+				wmb();
+				audio_ringbuf_ptr->rp = audio_ringbuf_ptr->wp = audio_ringbuf_ptr->base = cached_base;
+				audio_ringbuf_ptr->limit = cached_limit;
+				wmb();
+				memset(audio_ringbuf_ptr->base, 0, (1U << FW_DMABUFSHIFT));
+					
+				// structAudioInCommand.usb_ai_ringbuf_addr
+				structAudioInCommand.usb_ai_ringbuf_addr = audio_ringbuf_ptr;
+
+				// structAudioInCommand.usb_ai_samplerate
+				tmp = 0;
+				for(i = 0; i < as->usb_audio_in_sampling_rate_size; i++) {
+					for(j = 0; j < (sizeof(audio_samplerate)/sizeof(int)); j++) {
+						if(as->usb_audio_in_sampling_rate_array[i] == audio_samplerate[j]) {
+							tmp |= 1 << j;
+							break;
+						}
+					}
+				}
+				structAudioInCommand.usb_ai_samplerate = tmp;
+
+				// structAudioInCommand.usb_ai_format
+				structAudioInCommand.usb_ai_format =   ENUM_USB_AUDIO_IN_FORMAT_SIGNED_8BITS |
+									ENUM_USB_AUDIO_IN_FORMAT_SIGNED_16BITS |
+									ENUM_USB_AUDIO_IN_FORMAT_UNSIGNED_8BITS |
+									ENUM_USB_AUDIO_IN_FORMAT_UNSIGNED_16BITS;
+
+				// structAudioInCommand.usb_ai_max_chnum
+				structAudioInCommand.usb_ai_max_chnum = 2;
+#ifdef CONFIG_REALTEK_RPC
+				UsbAudioInThreadStatus(s, structAudioInCommand.command, &structAudioInCommand);
+#endif /* CONFIG_REALTEK_RPC */
+				break;
+			case ENUM_USB_AUDIO_IN_CMD_SETINFO:
+printk("#######[cfyeh-debug] %s(%d) ENUM_USB_AUDIO_IN_CMD_SETINFO\n", __func__, __LINE__);
+				if(AudioIn_thread_flag == 1) {
+					printk("#######[cfyeh-debug] %s(%d) Can not ioctl ENUM_USB_AUDIO_IN_CMD_SETINFO after ENUM_USB_AUDIO_IN_CMD_START!\n", __func__, __LINE__);
+					return -EFAULT;
+				}
+
+				wmb();
+				audio_ringbuf_ptr->rp = audio_ringbuf_ptr->wp = audio_ringbuf_ptr->base = cached_base;
+				audio_ringbuf_ptr->limit = cached_limit;
+				wmb();
+					
+				// structAudioInCommand.usb_ai_ringbuf_addr
+				structAudioInCommand.usb_ai_ringbuf_addr = audio_ringbuf_ptr;
+
+				// structAudioInCommand.usb_ai_samplerate
+				for(j = 0; j < (sizeof(audio_samplerate)/sizeof(int)); j++) {
+					if(((structAudioInCommand.usb_ai_samplerate >> j) & 0x1) == 1) {
+						val = audio_samplerate[j];
+						break;
+					}
+				}
+				if (val >= 0) {
+					if (val < 4000)
+						val = 4000;
+					if (val > 100000)
+						val = 100000;
+					if (set_format(as, FMODE_READ, AFMT_QUERY, val))
+						return -EIO;
+				}
+				for(j = 0; j < (sizeof(audio_samplerate)/sizeof(int)); j++) {
+					if(as->usbin.dma.srate == audio_samplerate[j]) {
+						structAudioInCommand.usb_ai_samplerate = 1 << j;
+						break;
+					}
+				}
+
+				// structAudioInCommand.usb_ai_format
+				if(!(structAudioInCommand.usb_ai_format &      (ENUM_USB_AUDIO_IN_FORMAT_SIGNED_8BITS |
+										ENUM_USB_AUDIO_IN_FORMAT_SIGNED_16BITS |
+										ENUM_USB_AUDIO_IN_FORMAT_UNSIGNED_8BITS |
+										ENUM_USB_AUDIO_IN_FORMAT_UNSIGNED_16BITS)))
+					return -EINVAL;
+				switch(structAudioInCommand.usb_ai_format) {
+					case ENUM_USB_AUDIO_IN_FORMAT_SIGNED_16BITS:
+						val = AFMT_S16_BE;
+						break;
+					case ENUM_USB_AUDIO_IN_FORMAT_UNSIGNED_16BITS:
+						val = AFMT_U16_BE;
+						break;
+					case ENUM_USB_AUDIO_IN_FORMAT_SIGNED_8BITS:
+						val = AFMT_S8;
+						break;
+					case ENUM_USB_AUDIO_IN_FORMAT_UNSIGNED_8BITS:
+						val = AFMT_U8;
+						break;
+				}
+				val2 = as->usbin.dma.format;
+				val |= val2 & AFMT_STEREO;
+				if (set_format(as, FMODE_READ, val, 0))
+					return -EIO;
+
+				// structAudioInCommand.usb_ai_max_chnum
+				val = structAudioInCommand.usb_ai_max_chnum ;
+				if (val != 0) {
+					val2 = as->usbin.dma.format;
+					if (val == 1) {
+						val2 &= ~AFMT_STEREO;
+						structAudioInCommand.usb_ai_max_chnum = 1;
+					}
+					else {
+						val2 |= AFMT_STEREO;
+						structAudioInCommand.usb_ai_max_chnum = 2;
+					}
+					if (set_format(as, FMODE_READ, val2, 0))
+						return -EIO;
+				}
+#ifdef CONFIG_REALTEK_RPC
+				UsbAudioInThreadStatus(s, structAudioInCommand.command, &structAudioInCommand);
+#endif /* CONFIG_REALTEK_RPC */
+				break;
+			case ENUM_USB_AUDIO_IN_CMD_MUTE:
+printk("#######[cfyeh-debug] %s(%d) ENUM_USB_AUDIO_IN_CMD_MUTE\n", __func__, __LINE__);
+				audio_in_thread_mute = 1;
+
+				// structAudioInCommand.usb_ai_ringbuf_addr
+				structAudioInCommand.usb_ai_ringbuf_addr = audio_ringbuf_ptr;
+
+#ifdef CONFIG_REALTEK_RPC
+				UsbAudioInThreadStatus(s, structAudioInCommand.command, NULL);
+#endif /* CONFIG_REALTEK_RPC */
+				break;
+			case ENUM_USB_AUDIO_IN_CMD_UNMUTE:
+printk("#######[cfyeh-debug] %s(%d) ENUM_USB_AUDIO_IN_CMD_UNMUTE\n", __func__, __LINE__);
+				audio_in_thread_mute = 0;
+
+				// structAudioInCommand.usb_ai_ringbuf_addr
+				structAudioInCommand.usb_ai_ringbuf_addr = audio_ringbuf_ptr;
+
+#ifdef CONFIG_REALTEK_RPC
+				UsbAudioInThreadStatus(s, structAudioInCommand.command, NULL);
+#endif /* CONFIG_REALTEK_RPC */
+				break;
+			default:
+				return -EFAULT;
+		}
+		printk("#######[cfyeh-debug] %s(%d) audio_ringbuf_ptr %p %p\n", __func__, __LINE__, audio_ringbuf_ptr, &audio_ringbuf_ptr);
+		if(audio_ringbuf_ptr) {
+				printk("#######[cfyeh-debug] %s(%d) r 0x%.8x w 0x%.8x b 0x%.8x(0x%.8x) l 0x%.8x(0x%.8x)\n", __func__, __LINE__, audio_ringbuf_ptr->rp, audio_ringbuf_ptr->wp, audio_ringbuf_ptr->base, cached_base, audio_ringbuf_ptr->limit, cached_limit);
+		}
+
+		return copy_to_user(user_arg, &structAudioInCommand, sizeof(structAudioInCommand));
+#endif  /* ! USBAUDIO_TEST_THREAD_WO_IOCTL */
+#endif /* CONFIG_USB_AUDIO_IN_THREAD */
+
 	case SOUND_PCM_WRITE_FILTER:
 	case SNDCTL_DSP_SETSYNCRO:
 	case SOUND_PCM_READ_FILTER:
@@ -2691,7 +3261,13 @@ static int usb_audio_release(struct inode *inode, struct file *file)
 		usbin_stop(as);
 		if (dev && as->usbin.interface >= 0)
 			usb_set_interface(dev, as->usbin.interface, 0);
-		dmabuf_release(&as->usbin.dma);
+#ifdef CONFIG_USB_AUDIO_IN_THREAD
+		printk("#######[cfyeh-debug] %s(%d)\n", __func__, __LINE__);
+		if(as->usbin.for_fw) {
+			dmabuf_release_for_fw(&as->usbin.dma);
+		} else
+#endif /* CONFIG_USB_AUDIO_IN_THREAD */
+			dmabuf_release(&as->usbin.dma);
 		usbin_release(as);
 	}
 	as->open_mode &= (~file->f_mode) & (FMODE_READ|FMODE_WRITE);
@@ -2733,6 +3309,184 @@ static struct usb_driver usb_audio_driver = {
 	.probe =	usb_audio_probe,
 	.disconnect =	usb_audio_disconnect,
 	.id_table =	usb_audio_ids,
+};
+
+static void inline mic_vendor_read(struct device *dev, int addr, unsigned char *buffer) {
+	usb_control_msg(dev, usb_rcvctrlpipe(dev, 0),
+		0x0, 0xc3, addr, 0x0, buffer, 1, 1000);
+}
+
+static void inline mic_vendor_write(struct device *dev, int addr, unsigned char *buffer) {
+	usb_control_msg(dev, usb_sndctrlpipe(dev, 0),
+		0x8, 0x43, addr, 0x0, buffer, 1, 1000);
+}
+
+static ssize_t  show_bias (struct device *dev, struct device_attribute *attr, char *buf)
+{
+	unsigned char buffer = 0;
+
+	// read addr 0x24
+	mic_vendor_read(sysfs_add_group_dev, 0x24, &buffer);
+	printk("#######[cfyeh-debug] %s(%d) read addr 0x24 0x%x\n", __func__, __LINE__, buffer);
+	return sprintf (buf, "%d\n", buffer & 0x1);
+}
+
+static ssize_t
+set_bias (struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	int				config, value;
+	unsigned char			buffer = 0;
+
+	if ((value = sscanf (buf, "%u", &config)) != 1)
+		return -EINVAL;
+
+	// read addr 0x24
+	mic_vendor_read(sysfs_add_group_dev, 0x24, &buffer);
+	printk("#######[cfyeh-debug] %s(%d) read addr 0x24 0x%x\n", __func__, __LINE__, buffer);
+	if(config == 1)
+		buffer |= 0x1;
+	else
+		buffer &= ~0x1;
+	printk("#######[cfyeh-debug] %s(%d) set addr 0x24 0x%x\n", __func__, __LINE__, buffer);
+	// write addr 0x24
+	mic_vendor_write(sysfs_add_group_dev, 0x24, &buffer);
+
+	buffer = 0;
+	mic_vendor_read(sysfs_add_group_dev, 0x24, &buffer);
+	printk("#######[cfyeh-debug] %s(%d) read addr 0x24 0x%x\n", __func__, __LINE__, buffer);
+
+	return (value < 0) ? value : count;
+}
+
+static DEVICE_ATTR(bias, S_IRUGO | S_IWUSR, 
+		show_bias, set_bias);
+
+static ssize_t  show_gpio_out (struct device *dev, struct device_attribute *attr, char *buf)
+{
+	unsigned char buffer = 0;
+
+	mic_vendor_read(sysfs_add_group_dev, 0x4, &buffer);
+	printk("#######[cfyeh-debug] %s(%d) read addr 0x4 0x%x\n", __func__, __LINE__, buffer);
+	return sprintf (buf, "%d\n", (buffer >> gpio_num) & 0x1);
+}
+
+static ssize_t
+set_gpio_out (struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	int				config, value;
+	unsigned char			buffer = 0;
+
+	if ((value = sscanf (buf, "%u", &config)) != 1)
+		return -EINVAL;
+
+	mic_vendor_read(sysfs_add_group_dev, 0x5, &buffer);
+	printk("#######[cfyeh-debug] %s(%d) read addr 0x5 0x%x\n", __func__, __LINE__, buffer);
+	buffer |= (0x1 << gpio_num);
+	printk("#######[cfyeh-debug] %s(%d) set addr 0x5 0x%x\n", __func__, __LINE__, buffer);
+	mic_vendor_write(sysfs_add_group_dev, 0x5, &buffer);
+	buffer = 0;
+	mic_vendor_read(sysfs_add_group_dev, 0x5, &buffer);
+	printk("#######[cfyeh-debug] %s(%d) read addr 0x5 0x%x\n", __func__, __LINE__, buffer);
+
+	mic_vendor_read(sysfs_add_group_dev, 0x4, &buffer);
+	printk("#######[cfyeh-debug] %s(%d) read addr 0x4 0x%x\n", __func__, __LINE__, buffer);
+	if(config > 0)
+		buffer |= (0x1 << gpio_num);
+	else
+		buffer &= ~(0x1 << gpio_num);
+	printk("#######[cfyeh-debug] %s(%d) set addr 0x4 0x%x\n", __func__, __LINE__, buffer);
+	mic_vendor_write(sysfs_add_group_dev, 0x4, &buffer);
+	buffer = 0;
+	mic_vendor_read(sysfs_add_group_dev, 0x4, &buffer);
+	printk("#######[cfyeh-debug] %s(%d) read addr 0x4 0x%x\n", __func__, __LINE__, buffer);
+
+	return (value < 0) ? value : count;
+}
+
+static DEVICE_ATTR(gpio_out, S_IRUGO | S_IWUSR, 
+		show_gpio_out, set_gpio_out);
+
+static ssize_t  show_gpio_in (struct device *dev, struct device_attribute *attr, char *buf)
+{
+	unsigned char buffer = 0;
+
+	mic_vendor_read(sysfs_add_group_dev, 0x3, &buffer);
+	printk("#######[cfyeh-debug] %s(%d) read addr 0x3 0x%x\n", __func__, __LINE__, buffer);
+	return sprintf (buf, "%d\n", (buffer >> gpio_num) & 0x1);
+}
+
+static ssize_t
+set_gpio_in (struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	int				config, value;
+	unsigned char			buffer = 0;
+
+	if ((value = sscanf (buf, "%u", &config)) != 1)
+		return -EINVAL;
+
+	mic_vendor_read(sysfs_add_group_dev, 0x5, &buffer);
+	printk("#######[cfyeh-debug] %s(%d) read addr 0x5 0x%x\n", __func__, __LINE__, buffer);
+	buffer &= ~(0x1 << gpio_num);
+	printk("#######[cfyeh-debug] %s(%d) set addr 0x5 0x%x\n", __func__, __LINE__, buffer);
+	mic_vendor_write(sysfs_add_group_dev, 0x5, &buffer);
+	buffer = 0;
+	mic_vendor_read(sysfs_add_group_dev, 0x5, &buffer);
+	printk("#######[cfyeh-debug] %s(%d) read addr 0x5 0x%x\n", __func__, __LINE__, buffer);
+
+	mic_vendor_read(sysfs_add_group_dev, 0x3, &buffer);
+	printk("#######[cfyeh-debug] %s(%d) read addr 0x3 0x%x\n", __func__, __LINE__, buffer);
+	if(config > 0)
+		buffer |= (0x1 << gpio_num);
+	else
+		buffer &= ~(0x1 << gpio_num);
+	printk("#######[cfyeh-debug] %s(%d) set addr 0x3 0x%x\n", __func__, __LINE__, buffer);
+	mic_vendor_write(sysfs_add_group_dev, 0x3, &buffer);
+	buffer = 0;
+	mic_vendor_read(sysfs_add_group_dev, 0x3, &buffer);
+	printk("#######[cfyeh-debug] %s(%d) read addr 0x3 0x%x\n", __func__, __LINE__, buffer);
+
+	return (value < 0) ? value : count;
+}
+
+static DEVICE_ATTR(gpio_in, S_IRUGO | S_IWUSR, 
+		show_gpio_in, set_gpio_in);
+
+static ssize_t  show_gpio_num (struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return sprintf (buf, "%d\n", gpio_num + 1);
+}
+
+static ssize_t
+set_gpio_num (struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	int				config, value;
+
+	if ((value = sscanf (buf, "%u", &config)) != 1)
+		return -EINVAL;
+
+	if(config < 1)
+		gpio_num = 0;
+	else if (config > 8)
+		gpio_num = 7;
+	else
+		gpio_num = config - 1;
+
+	return (value < 0) ? value : count;
+}
+
+static DEVICE_ATTR(gpio_num, S_IRUGO | S_IWUSR, 
+		show_gpio_num, set_gpio_num);
+
+static struct attribute *dev_attrs[] = {
+	&dev_attr_bias.attr,
+	&dev_attr_gpio_out.attr,
+	&dev_attr_gpio_in.attr,
+	&dev_attr_gpio_num.attr,
+	NULL,
+};
+
+static struct attribute_group dev_attr_grp = {
+	.attrs = dev_attrs,
 };
 
 static void *find_descriptor(void *descstart, unsigned int desclen, void *after, 
@@ -2800,6 +3554,9 @@ static void usb_audio_parsestreaming(struct usb_audio_state *s, unsigned char *b
 	struct audioformat *fp;
 	unsigned char *fmt, *csep;
 	unsigned int i, j, k, format, idx;
+#ifdef IOCTL_FOR_IN_OUT_SAMPLING_RATE 
+	int add_flag = 0;
+#endif /* IOCTL_FOR_IN_OUT_SAMPLING_RATE */
 
 	if (!(as = kmalloc(sizeof(struct usb_audiodev), GFP_KERNEL)))
 		return;
@@ -2841,6 +3598,10 @@ static void usb_audio_parsestreaming(struct usb_audio_state *s, unsigned char *b
 	if (asifin >= 0) {
 		as->usbin.flags = FLG_CONNECTED;
 		iface = usb_ifnum_to_if(dev, asifin);
+#ifdef IOCTL_FOR_IN_OUT_SAMPLING_RATE 
+		as->usb_audio_in_sampling_rate_size = add_flag = 0;
+		memset(as->usb_audio_in_sampling_rate_array, 0, sizeof(as->usb_audio_in_sampling_rate_array));
+#endif /* IOCTL_FOR_IN_OUT_SAMPLING_RATE */
 		for (idx = 0; idx < iface->num_altsetting; idx++) {
 			alts = &iface->altsetting[idx];
 			i = alts->desc.bAlternateSetting;
@@ -2905,9 +3666,18 @@ static void usb_audio_parsestreaming(struct usb_audio_state *s, unsigned char *b
 			fp->format = format;
 			fp->altsetting = i;
 			fp->sratelo = fp->sratehi = fmt[8] | (fmt[9] << 8) | (fmt[10] << 16);
+#ifdef IOCTL_FOR_IN_OUT_SAMPLING_RATE 
+			add_flag = as->usb_audio_in_sampling_rate_size;
+			if(!add_flag)
+				as->usb_audio_in_sampling_rate_array[as->usb_audio_in_sampling_rate_size++] = (unsigned int)fp->sratelo;
+#endif /* IOCTL_FOR_IN_OUT_SAMPLING_RATE */
 			printk(KERN_INFO "usbaudio: valid input sample rate %u\n", fp->sratelo);
 			for (j = fmt[7] ? (fmt[7]-1) : 1; j > 0; j--) {
 				k = fmt[8+3*j] | (fmt[9+3*j] << 8) | (fmt[10+3*j] << 16);
+#ifdef IOCTL_FOR_IN_OUT_SAMPLING_RATE 
+				if(!add_flag)
+					as->usb_audio_in_sampling_rate_array[as->usb_audio_in_sampling_rate_size++] = (unsigned int)k;
+#endif /* IOCTL_FOR_IN_OUT_SAMPLING_RATE */
 				printk(KERN_INFO "usbaudio: valid input sample rate %u\n", k);
 				if (k > fp->sratehi)
 					fp->sratehi = k;
@@ -2918,11 +3688,16 @@ static void usb_audio_parsestreaming(struct usb_audio_state *s, unsigned char *b
 			printk(KERN_INFO "usbaudio: device %u interface %u altsetting %u: format 0x%08x sratelo %u sratehi %u attributes 0x%02x\n", 
 			       dev->devnum, asifin, i, fp->format, fp->sratelo, fp->sratehi, fp->attributes);
 		}
+		kobject_hotplug(&dev->dev.kobj, KOBJ_USBAI_UP);
 	}
 	/* search for output formats */
 	if (asifout >= 0) {
 		as->usbout.flags = FLG_CONNECTED;
 		iface = usb_ifnum_to_if(dev, asifout);
+#ifdef IOCTL_FOR_IN_OUT_SAMPLING_RATE 
+		as->usb_audio_out_sampling_rate_size = add_flag = 0;
+		memset(as->usb_audio_out_sampling_rate_array, 0, sizeof(as->usb_audio_out_sampling_rate_array));
+#endif /* IOCTL_FOR_IN_OUT_SAMPLING_RATE */
 		for (idx = 0; idx < iface->num_altsetting; idx++) {
 			alts = &iface->altsetting[idx];
 			i = alts->desc.bAlternateSetting;
@@ -2992,9 +3767,18 @@ static void usb_audio_parsestreaming(struct usb_audio_state *s, unsigned char *b
 			fp->format = format;
 			fp->altsetting = i;
 			fp->sratelo = fp->sratehi = fmt[8] | (fmt[9] << 8) | (fmt[10] << 16);
+#ifdef IOCTL_FOR_IN_OUT_SAMPLING_RATE 
+			add_flag = as->usb_audio_out_sampling_rate_size;
+			if(!add_flag)
+				as->usb_audio_out_sampling_rate_array[as->usb_audio_out_sampling_rate_size++] = (unsigned int)fp->sratelo;
+#endif /* IOCTL_FOR_IN_OUT_SAMPLING_RATE */
 			printk(KERN_INFO "usbaudio: valid output sample rate %u\n", fp->sratelo);
 			for (j = fmt[7] ? (fmt[7]-1) : 1; j > 0; j--) {
 				k = fmt[8+3*j] | (fmt[9+3*j] << 8) | (fmt[10+3*j] << 16);
+#ifdef IOCTL_FOR_IN_OUT_SAMPLING_RATE 
+				if(!add_flag)
+					as->usb_audio_out_sampling_rate_array[as->usb_audio_out_sampling_rate_size++] = (unsigned int)k;
+#endif /* IOCTL_FOR_IN_OUT_SAMPLING_RATE */
 				printk(KERN_INFO "usbaudio: valid output sample rate %u\n", k);
 				if (k > fp->sratehi)
 					fp->sratehi = k;
@@ -3005,6 +3789,7 @@ static void usb_audio_parsestreaming(struct usb_audio_state *s, unsigned char *b
 			printk(KERN_INFO "usbaudio: device %u interface %u altsetting %u: format 0x%08x sratelo %u sratehi %u attributes 0x%02x\n", 
 			       dev->devnum, asifout, i, fp->format, fp->sratelo, fp->sratehi, fp->attributes);
 		}
+		kobject_hotplug(&dev->dev.kobj, KOBJ_USBAO_UP);
 	}
 	if (as->numfmtin == 0 && as->numfmtout == 0) {
 		usb_free_urb(as->usbin.durb[0].urb);
@@ -3032,6 +3817,7 @@ static void usb_audio_parsestreaming(struct usb_audio_state *s, unsigned char *b
 		return;
 	}
 	printk(KERN_INFO "usbaudio: registered dsp 14,%d\n", as->dev_audio);
+
 	/* everything successful */
 	list_add_tail(&as->list, &s->audiolist);
 }
@@ -3770,9 +4556,20 @@ static int usb_audio_probe(struct usb_interface *intf,
 			   const struct usb_device_id *id)
 {
 	struct usb_device *dev = interface_to_usbdev (intf);
+	struct usb_audiodev *as;
 	struct usb_audio_state *s;
 	unsigned char *buffer;
 	unsigned int buflen;
+#ifdef USBAUDIO_TEST_THREAD_WO_IOCTL
+	pid_t pid;
+#endif  /* USBAUDIO_TEST_THREAD_WO_IOCTL */
+
+#ifdef CONFIG_USB_AUDIO_IN_THREAD
+	//int result;
+	//printk("#######[cfyeh-debug] %s(%d)\n", __func__, __LINE__);
+	//if((result = init_ringbuf_for_fw()))
+	//	return result;
+#endif /* CONFIG_USB_AUDIO_IN_THREAD */
 
 #if 0
 	printk(KERN_DEBUG "usbaudio: Probing if %i: IC %x, ISC %x\n", ifnum,
@@ -3788,6 +4585,56 @@ static int usb_audio_probe(struct usb_interface *intf,
 	buflen = le16_to_cpu(dev->actconfig->desc.wTotalLength);
 	s = usb_audio_parsecontrol(dev, buffer, buflen, intf->altsetting->desc.bInterfaceNumber);
 	if (s) {
+		printk("#######[cfyeh-debug] %s(%d) VID 0x%.4x PID 0x%.4x\n",
+				__func__, __LINE__, dev->descriptor.idVendor, dev->descriptor.idProduct);
+
+#ifdef CONFIG_USB_AUDIO_IN_THREAD
+		printk("#######[cfyeh-debug] %s(%d) VID 0x%.4x\n",
+				__func__, __LINE__, CONFIG_USB_AUDIO_IN_THREAD_VID);
+		if((dev->descriptor.idVendor == CONFIG_USB_AUDIO_IN_THREAD_VID) || (CONFIG_USB_AUDIO_IN_THREAD_VID == 0)) {
+			printk("#######[cfyeh-debug] %s(%d) find the right device!!!\n", __func__, __LINE__);
+		list_for_each_entry(as, &s->audiolist, list) {
+			if (as->dev_audio >= 0) {
+				break;
+			}
+		}
+		if((as->usbin.flags == FLG_CONNECTED) && !sysfs_add_group_usbdev)
+		{
+#ifdef USBAUDIO_TEST_THREAD_WO_IOCTL
+#if 1
+			pid = 0;
+			if(!AudioIn_pid) {
+				pid = kernel_thread(AudioIn_thread, NULL, CLONE_KERNEL);
+				if (pid >= 0) {
+					AudioIn_pid = pid;
+				}
+			}
+#endif
+#ifdef USBAUDIO_TEST_THREAD_WO_IOCTL_IN_TO_OUT 
+			if(as->usbout.flags == FLG_CONNECTED) {
+				pid = 0;
+				if(!AudioOut_pid) {
+					pid = kernel_thread(AudioOut_thread, NULL, CLONE_KERNEL);
+					if (pid >= 0) {
+						AudioOut_pid = pid;
+					}
+				}
+			}
+#endif /* USBAUDIO_TEST_THREAD_WO_IOCTL_IN_TO_OUT */
+#endif  /* USBAUDIO_TEST_THREAD_WO_IOCTL */
+#endif /* CONFIG_USB_AUDIO_IN_THREAD */
+			sysfs_add_group_usbdev = s->usbdev;
+			sysfs_add_group_dev = dev;
+			sysfs_create_group(&(sysfs_add_group_usbdev->dev).kobj, &dev_attr_grp);
+#ifdef CONFIG_USB_AUDIO_IN_THREAD
+#ifdef CONFIG_REALTEK_RPC
+			UsbAudioInThreadStatus(s, ENUM_USB_AUDIO_IN_CMD_CONNECT, NULL);
+#endif /* CONFIG_REALTEK_RPC */
+		}
+#endif /* CONFIG_USB_AUDIO_IN_THREAD */
+#ifdef CONFIG_USB_AUDIO_IN_THREAD
+		}
+#endif /* CONFIG_USB_AUDIO_IN_THREAD */
 		usb_set_intfdata (intf, s);
 		return 0;
 	}
@@ -3800,6 +4647,7 @@ static int usb_audio_probe(struct usb_interface *intf,
 static void usb_audio_disconnect(struct usb_interface *intf)
 {
 	struct usb_audio_state *s = usb_get_intfdata (intf);
+	struct usb_device *dev = interface_to_usbdev (intf);
 	struct usb_audiodev *as;
 	struct usb_mixerdev *ms;
 
@@ -3815,6 +4663,34 @@ static void usb_audio_disconnect(struct usb_interface *intf)
 		dprintk((KERN_DEBUG "usbaudio: error,  usb_audio_disconnect already called for %p!\n", s));
 		return;
 	}
+	if(sysfs_add_group_usbdev == s->usbdev) {
+#ifdef CONFIG_USB_AUDIO_IN_THREAD
+#ifdef CONFIG_REALTEK_RPC
+		UsbAudioInThreadStatus(s, ENUM_USB_AUDIO_IN_CMD_DISCONNECT, NULL);
+#endif /* CONFIG_REALTEK_RPC */
+#endif /* CONFIG_USB_AUDIO_IN_THREAD */
+		sysfs_remove_group(&(sysfs_add_group_usbdev->dev).kobj, &dev_attr_grp);
+		sysfs_add_group_usbdev = NULL;
+		sysfs_add_group_dev = NULL;
+#ifdef CONFIG_USB_AUDIO_IN_THREAD
+		if(AudioIn_pid) {
+			int ret;
+
+			/* Kill the thread */
+			ret = kill_proc(AudioIn_pid, SIGKILL, 1);
+			AudioIn_pid = 0;
+			wait_for_completion(&AudioIn_exited);
+		}
+		if(AudioOut_pid) {
+			int ret;
+
+			/* Kill the thread */
+			ret = kill_proc(AudioOut_pid, SIGKILL, 1);
+			AudioOut_pid = 0;
+			wait_for_completion(&AudioOut_exited);
+		}
+#endif /* CONFIG_USB_AUDIO_IN_THREAD */
+	}
 	down(&open_sem);
 	list_del_init(&s->audiodev);
 	s->usbdev = NULL;
@@ -3822,6 +4698,12 @@ static void usb_audio_disconnect(struct usb_interface *intf)
 
 	/* deregister all audio and mixer devices, so no new processes can open this device */
 	list_for_each_entry(as, &s->audiolist, list) {
+		if(as->usbin.flags == FLG_CONNECTED) {
+			kobject_hotplug(&dev->dev.kobj, KOBJ_USBAI_DOWN);
+		}
+		if(as->usbout.flags == FLG_CONNECTED) {
+			kobject_hotplug(&dev->dev.kobj, KOBJ_USBAO_DOWN);
+		}
 		usbin_disc(as);
 		usbout_disc(as);
 		wake_up(&as->usbin.dma.wait);
@@ -3830,7 +4712,10 @@ static void usb_audio_disconnect(struct usb_interface *intf)
 			unregister_sound_dsp(as->dev_audio);
 			printk(KERN_INFO "usbaudio: unregister dsp 14,%d\n", as->dev_audio);
 		}
-		as->dev_audio = -1;
+		as->dev_audio = 0;
+#ifdef IOCTL_FOR_IN_OUT_SAMPLING_RATE 
+		as->usb_audio_in_sampling_rate_size = as->usb_audio_out_sampling_rate_size = 0;
+#endif /* IOCTL_FOR_IN_OUT_SAMPLING_RATE */
 	}
 	list_for_each_entry(ms, &s->mixerlist, list) {
 		if (ms->dev_mixer >= 0) {
@@ -3843,9 +4728,404 @@ static void usb_audio_disconnect(struct usb_interface *intf)
 	wake_up(&open_wait);
 }
 
+#ifdef CONFIG_USB_AUDIO_IN_THREAD
+static int AudioIn_thread(void * __as)
+{
+#ifdef USBAUDIO_TEST_THREAD_WO_IOCTL
+	// static int usb_audio_open(struct inode *inode, struct file *file) +++
+	DECLARE_WAITQUEUE(wait, current);
+	struct usb_audiodev *as;
+	struct usb_audio_state *s;
+
+	for (;;) {
+		down(&open_sem);
+		list_for_each_entry(s, &audiodevs, audiodev) {
+			if(sysfs_add_group_usbdev == s->usbdev) {
+				list_for_each_entry(as, &s->audiolist, list) {
+					if (as->dev_audio >= 0)
+						goto device_found;
+				}
+			}
+		}
+		up(&open_sem);
+		return -ENODEV;
+
+	device_found:
+		if (!s->usbdev) {
+			up(&open_sem);
+			return -EIO;
+		}
+		/* wait for device to become free */
+		if (!(as->open_mode & FMODE_READ)) {
+			break;
+		}
+		__set_current_state(TASK_INTERRUPTIBLE);
+		add_wait_queue(&open_wait, &wait);
+		up(&open_sem);
+		schedule();
+		__set_current_state(TASK_RUNNING);
+		remove_wait_queue(&open_wait, &wait);
+		if (signal_pending(current)) {
+			return -ERESTARTSYS;
+		}
+	}
+	as->usbin.dma.ossfragshift = as->usbin.dma.ossmaxfrags = as->usbin.dma.subdivision = 0;
+	if (set_format(as, FMODE_READ, AFMT_S16_BE, 48000)) {
+		up(&open_sem);
+		return -EIO;
+	}
+	as->open_mode |= FMODE_READ;
+	s->count++;
+	up(&open_sem);
+	// static int usb_audio_open(struct inode *inode, struct file *file) ---
+#else
+	struct usb_audiodev *as = __as;
+#endif  /* USBAUDIO_TEST_THREAD_WO_IOCTL */
+
+	/*
+	 * This thread doesn't need any user-level access,
+	 * so get rid of all our resources
+	 */
+
+	daemonize("AudioIn_thread");
+	allow_signal(SIGKILL);
+
+	/* Send me a signal to get me die (for debugging) */
+	do {
+#ifndef USBAUDIO_TEST_THREAD_WO_IOCTL
+		if(!AudioIn_thread_flag) {
+#ifdef CONFIG_REALTEK_RPC
+			UsbAudioInThreadStatus(as->state, ENUM_USB_AUDIO_IN_CMD_STOP, NULL);
+#endif /* CONFIG_REALTEK_RPC */
+			wait_event_interruptible(AudioIn_wait, AudioIn_thread_flag); 
+			try_to_freeze(PF_FREEZE);
+			printk("#######[cfyeh-debug] %s(%d) 1st pts 0x%.8x%.8x\n", __func__, __LINE__, readl((unsigned int*)0xb801b544), readl((unsigned int*)0xb801b540));
+		}
+#endif  /* ! USBAUDIO_TEST_THREAD_WO_IOCTL */
+	// static ssize_t usb_audio_read(struct file *file, char __user *buffer, size_t count, loff_t *ppos) +++
+	{
+		DECLARE_WAITQUEUE(wait, current);
+		ssize_t ret = 0;
+		unsigned long flags;
+		unsigned int ptr;
+		int cnt;
+		size_t count;
+
+		if (as->usbin.dma.mapped) {
+			return -ENXIO;
+		}
+		if (!as->usbin.dma.ready && (ret = prog_dmabuf_in_for_fw(as))) {
+			return ret;
+		}
+		add_wait_queue(&as->usbin.dma.wait, &wait);
+		count = as->usbin.dma.fragsize;
+		while (count > 0) {
+			//printk("#######[cfyeh-debug] %s(%d) usbin count %d\n", __func__, __LINE__, count);
+			spin_lock_irqsave(&as->lock, flags);
+			ptr = as->usbin.dma.rdptr;
+			cnt = as->usbin.dma.count;
+			/* set task state early to avoid wakeup races */
+			if (cnt <= 0)
+				__set_current_state(TASK_INTERRUPTIBLE);
+			spin_unlock_irqrestore(&as->lock, flags);
+			if (cnt > count)
+				cnt = count;
+			if (cnt <= 0) {
+				if (usbin_start(as)) {
+					if (!ret)
+						ret = -ENODEV;
+					goto out_of_AudioIn_loop;
+				}
+				schedule();
+				if (signal_pending(current)) {
+					if (!ret)
+						ret = -ERESTARTSYS;
+					goto out_of_AudioIn_loop;
+				}
+				continue;
+			}
+			ptr += cnt;
+			if (ptr >= as->usbin.dma.dmasize)
+				ptr -= as->usbin.dma.dmasize;
+			spin_lock_irqsave(&as->lock, flags);
+			as->usbin.dma.rdptr = ptr;
+			as->usbin.dma.count -= cnt;
+			spin_unlock_irqrestore(&as->lock, flags);
+			count -= cnt;
+			ret += cnt;
+		}
+		__set_current_state(TASK_RUNNING);
+		remove_wait_queue(&as->usbin.dma.wait, &wait);
+	}
+	// static ssize_t usb_audio_read(struct file *file, char __user *buffer, size_t count, loff_t *ppos) ---
+
+	} while (!signal_pending(current));
+
+out_of_AudioIn_loop:
+#ifdef USBAUDIO_TEST_THREAD_WO_IOCTL
+	// static int usb_audio_release(struct inode *inode, struct file *file) +++
+	{
+	struct usb_device *dev;
+
+	lock_kernel();
+	s = as->state;
+	dev = s->usbdev;
+	down(&open_sem);
+	usbin_stop(as);
+	if (dev && as->usbin.interface >= 0)
+		usb_set_interface(dev, as->usbin.interface, 0);
+		printk("#######[cfyeh-debug] %s(%d)\n", __func__, __LINE__);
+	dmabuf_release_for_fw(&as->usbin.dma);
+	usbin_release(as);
+	as->open_mode &= ~FMODE_READ;
+	release(s);
+	wake_up(&open_wait);
+	unlock_kernel();
+	}
+	// static int usb_audio_release(struct inode *inode, struct file *file) ---
+#endif  /* USBAUDIO_TEST_THREAD_WO_IOCTL */
+
+	complete_and_exit(&AudioIn_exited, 0);
+}
+
+static int AudioOut_thread(void * __as)
+{
+#ifdef USBAUDIO_TEST_THREAD_WO_IOCTL
+	// static int usb_audio_open(struct inode *inode, struct file *file) +++
+	DECLARE_WAITQUEUE(wait, current);
+	struct usb_audiodev *as;
+	struct usb_audio_state *s;
+
+	for (;;) {
+		down(&open_sem);
+		list_for_each_entry(s, &audiodevs, audiodev) {
+			if(sysfs_add_group_usbdev == s->usbdev) {
+				list_for_each_entry(as, &s->audiolist, list) {
+					if (as->dev_audio >= 0)
+						goto device_found;
+				}
+			}
+		}
+		up(&open_sem);
+		return -ENODEV;
+
+	device_found:
+		if (!s->usbdev) {
+			up(&open_sem);
+			return -EIO;
+		}
+		/* wait for device to become free */
+		if (!(as->open_mode & FMODE_WRITE)) {
+			break;
+		}
+		__set_current_state(TASK_INTERRUPTIBLE);
+		add_wait_queue(&open_wait, &wait);
+		up(&open_sem);
+		schedule();
+		__set_current_state(TASK_RUNNING);
+		remove_wait_queue(&open_wait, &wait);
+		if (signal_pending(current)) {
+			return -ERESTARTSYS;
+		}
+	}
+	as->usbout.dma.ossfragshift = as->usbout.dma.ossmaxfrags = as->usbout.dma.subdivision = 0;
+	if (set_format(as, FMODE_WRITE, AFMT_S16_BE, 48000)) {
+		up(&open_sem);
+		return -EIO;
+	}
+	as->open_mode |= FMODE_WRITE;
+	s->count++;
+	up(&open_sem);
+	// static int usb_audio_open(struct inode *inode, struct file *file) ---
+#else
+	struct usb_audiodev *as = __as;
+#endif  /* USBAUDIO_TEST_THREAD_WO_IOCTL */
+
+	/*
+	 * This thread doesn't need any user-level access,
+	 * so get rid of all our resources
+	 */
+
+	daemonize("AudioOut_thread");
+	allow_signal(SIGKILL);
+
+	/* Send me a signal to get me die (for debugging) */
+	do {
+#ifndef USBAUDIO_TEST_THREAD_WO_IOCTL
+		if(!AudioOut_thread_flag) {
+			wait_event_interruptible(AudioOut_wait, AudioOut_thread_flag); 
+			try_to_freeze(PF_FREEZE);
+		}
+#endif  /* ! USBAUDIO_TEST_THREAD_WO_IOCTL */
+	//static ssize_t usb_audio_write(struct file *file, const char __user *buffer, size_t count, loff_t *ppos) +++
+	{
+		DECLARE_WAITQUEUE(wait, current);
+		ssize_t ret = 0;
+		unsigned long flags;
+		unsigned int ptr;
+		unsigned int start_thr;
+		int cnt, err;
+		size_t count;
+
+		if (as->usbout.dma.mapped)
+			return -ENXIO;
+		if (!as->usbout.dma.ready && (ret = prog_dmabuf_out(as)))
+			return ret;
+		start_thr = (as->usbout.dma.srate << AFMT_BYTESSHIFT(as->usbout.dma.format)) / (1000 / (3 * DESCFRAMES));
+		add_wait_queue(&as->usbout.dma.wait, &wait);
+		count = as->usbin.dma.fragsize;
+		while (count > 0) {
+			//printk("#######[cfyeh-debug] %s(%d) usbout count %d\n", __func__, __LINE__, count);
+			spin_lock_irqsave(&as->lock, flags);
+			if (as->usbout.dma.count < 0) {
+				as->usbout.dma.count = 0;
+				as->usbout.dma.rdptr = as->usbout.dma.wrptr;
+			}
+			ptr = as->usbout.dma.wrptr;
+			cnt = as->usbout.dma.dmasize - as->usbout.dma.count;
+			/* set task state early to avoid wakeup races */
+			if (cnt <= 0)
+				__set_current_state(TASK_INTERRUPTIBLE);
+			spin_unlock_irqrestore(&as->lock, flags);
+			if (cnt > count)
+				cnt = count;
+			if (cnt <= 0) {
+				if (usbout_start(as)) {
+					if (!ret)
+						ret = -ENODEV;
+					goto out_of_AudioOut_loop;
+				}
+				schedule();
+				if (signal_pending(current)) {
+					if (!ret)
+						ret = -ERESTARTSYS;
+					goto out_of_AudioOut_loop;
+				}
+				continue;
+			}
+			if((err = dmabuf_copyin_ringbuf_for_fw(&as->usbout.dma, ptr, cnt))) {
+				if(!err)
+					ret = -ENODEV;
+				goto out_of_AudioOut_loop;
+			}
+			ptr += cnt;
+			if (ptr >= as->usbout.dma.dmasize)
+				ptr -= as->usbout.dma.dmasize;
+			spin_lock_irqsave(&as->lock, flags);
+			as->usbout.dma.wrptr = ptr;
+			as->usbout.dma.count += cnt;
+			spin_unlock_irqrestore(&as->lock, flags);
+			count -= cnt;
+			ret += cnt;
+			if (as->usbout.dma.count >= start_thr && usbout_start(as)) {
+				if (!ret)
+					ret = -ENODEV;
+				goto out_of_AudioOut_loop;
+			}
+		}
+		__set_current_state(TASK_RUNNING);
+		remove_wait_queue(&as->usbout.dma.wait, &wait);
+	}
+	//static ssize_t usb_audio_write(struct file *file, const char __user *buffer, size_t count, loff_t *ppos) ---
+	} while (!signal_pending(current));
+
+out_of_AudioOut_loop:
+#ifdef USBAUDIO_TEST_THREAD_WO_IOCTL
+	// static int usb_audio_release(struct inode *inode, struct file *file) +++
+	{
+	struct usb_device *dev;
+
+	lock_kernel();
+	s = as->state;
+	dev = s->usbdev;
+	down(&open_sem);
+	usbin_stop(as);
+	if (dev && as->usbin.interface >= 0)
+		usb_set_interface(dev, as->usbin.interface, 0);
+		printk("#######[cfyeh-debug] %s(%d)\n", __func__, __LINE__);
+	dmabuf_release_for_fw(&as->usbin.dma);
+	usbin_release(as);
+	as->open_mode &= ~FMODE_READ;
+	release(s);
+	wake_up(&open_wait);
+	unlock_kernel();
+	}
+	// static int usb_audio_release(struct inode *inode, struct file *file) ---
+#endif  /* USBAUDIO_TEST_THREAD_WO_IOCTL */
+
+	complete_and_exit(&AudioOut_exited, 0);
+}
+
+#ifdef CONFIG_REALTEK_RPC
+#if 1
+static int UsbAudioInThreadStatus(struct usb_audio_state *s, USB_AUDIO_IN_CMD cmd, USB_AUDIO_IN_INFO *AudioInCommand)
+{
+	return 0;
+}
+#else
+static int UsbAudioInThreadStatus(struct usb_audio_state *s, USB_AUDIO_IN_CMD cmd, USB_AUDIO_IN_INFO *AudioInCommand)
+{
+	USB_AUDIO_IN_INFO *structAudioInCommand;
+	struct page *page = 0;
+	unsigned long ret;
+
+	if(sysfs_add_group_usbdev != s->usbdev) {
+		printk("#######[cfyeh-debug] %s(%d) device fail %p %p\n", __func__, __LINE__, sysfs_add_group_usbdev, s->usbdev);
+		return 1;
+	}
+
+	page = alloc_page(GFP_KERNEL);
+	structAudioInCommand = (USB_AUDIO_IN_INFO *)page_address(page);
+	structAudioInCommand->command = cpu_to_be32((USB_AUDIO_IN_CMD)cmd);
+
+	if(AudioInCommand) {
+		structAudioInCommand->usb_ai_ringbuf_addr = cpu_to_be32(AudioInCommand->usb_ai_ringbuf_addr);
+		structAudioInCommand->usb_ai_samplerate = cpu_to_be32(AudioInCommand->usb_ai_samplerate);
+		structAudioInCommand->usb_ai_format = cpu_to_be32(AudioInCommand->usb_ai_format);
+		structAudioInCommand->usb_ai_max_chnum = cpu_to_be32(AudioInCommand->usb_ai_max_chnum);
+	} else {
+		structAudioInCommand->usb_ai_ringbuf_addr = 0;
+		structAudioInCommand->usb_ai_samplerate = 0;
+		structAudioInCommand->usb_ai_format = 0;
+		structAudioInCommand->usb_ai_max_chnum = 0;
+	}
+
+#ifdef CONFIG_REALTEK_PREVENT_DC_ALIAS
+	flush_dcache_page_alias(page);
+#else
+	flush_dcache_page(page);
+#endif
+	if (send_rpc_command(RPC_AUDIO, RPCCMD_CONFIG_USB_AUDIO_IN, UNCAC_BASE|(unsigned long)page_address(page), 0, &ret))
+		goto fail;
+
+	if (ret != S_OK) {
+		printk("#######[cfyeh-debug] %s(%d) audio rpc ret fail 0x%x\n", __func__, __LINE__, ret);
+		goto fail;
+	}
+
+	__free_page(page);
+
+	return 0;
+
+fail:
+	if (page)
+		__free_page(page);
+
+	return 1;
+}
+#endif
+#endif /* CONFIG_REALTEK_RPC */
+#endif /* CONFIG_USB_AUDIO_IN_THREAD */
+
 static int __init usb_audio_init(void)
 {
-	int result = usb_register(&usb_audio_driver);
+	int result;
+
+	printk("#######[cfyeh-debug] %s(%d) audio_ringbuf_ready %d\n", __func__, __LINE__, audio_ringbuf_ready);
+	audio_ringbuf_ready = 0;
+	printk("#######[cfyeh-debug] %s(%d) audio_ringbuf_ready %d\n", __func__, __LINE__, audio_ringbuf_ready);
+
+	result = usb_register(&usb_audio_driver);
 	if (result == 0) 
 		info(DRIVER_VERSION ":" DRIVER_DESC);
 	return result;
@@ -3854,6 +5134,25 @@ static int __init usb_audio_init(void)
 
 static void __exit usb_audio_cleanup(void)
 {
+#ifdef CONFIG_USB_AUDIO_IN_THREAD
+	if(AudioIn_pid) {
+		int ret;
+
+		/* Kill the thread */
+		ret = kill_proc(AudioIn_pid, SIGKILL, 1);
+		AudioIn_pid = 0;
+		wait_for_completion(&AudioIn_exited);
+	}
+	if(AudioOut_pid) {
+		int ret;
+
+		/* Kill the thread */
+		ret = kill_proc(AudioOut_pid, SIGKILL, 1);
+		AudioOut_pid = 0;
+		wait_for_completion(&AudioOut_exited);
+	}
+#endif /* CONFIG_USB_AUDIO_IN_THREAD */
+
 	usb_deregister(&usb_audio_driver);
 }
 

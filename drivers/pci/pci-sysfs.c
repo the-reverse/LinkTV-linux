@@ -21,6 +21,18 @@
 #include <linux/stat.h>
 #include <linux/topology.h>
 #include <linux/mm.h>
+#include <linux/version.h>
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,16))
+#include <asm/semaphore.h>
+#define mutex_lock(mutex) down(mutex)
+#define mutex_lock_interruptible(mutex) down_interruptible(mutex)
+#define mutex_unlock(mutex) up(mutex)
+#define mutex_init(mutex)   init_MUTEX(mutex)
+#define mutex               semaphore
+#define DEFINE_MUTEX(x)     DECLARE_MUTEX(x)
+#else
+#include <asm/mutex.h>
+#endif
 
 #include "pci.h"
 
@@ -29,7 +41,7 @@ static int sysfs_initialized;	/* = 0 */
 /* show configuration fields */
 #define pci_config_attr(field, format_string)				\
 static ssize_t								\
-field##_show(struct device *dev, char *buf)				\
+field##_show(struct device *dev, struct device_attribute *attr, char *buf)				\
 {									\
 	struct pci_dev *pdev;						\
 									\
@@ -44,7 +56,7 @@ pci_config_attr(subsystem_device, "0x%04x\n");
 pci_config_attr(class, "0x%06x\n");
 pci_config_attr(irq, "%u\n");
 
-static ssize_t local_cpus_show(struct device *dev, char *buf)
+static ssize_t local_cpus_show(struct device *dev, struct device_attribute *attr, char *buf)
 {		
 	cpumask_t mask = pcibus_to_cpumask(to_pci_dev(dev)->bus);
 	int len = cpumask_scnprintf(buf, PAGE_SIZE-2, mask);
@@ -54,7 +66,7 @@ static ssize_t local_cpus_show(struct device *dev, char *buf)
 
 /* show resources */
 static ssize_t
-resource_show(struct device * dev, char * buf)
+resource_show(struct device * dev, struct device_attribute *attr, char * buf)
 {
 	struct pci_dev * pci_dev = to_pci_dev(dev);
 	char * str = buf;
@@ -73,7 +85,7 @@ resource_show(struct device * dev, char * buf)
 	return (str - buf);
 }
 
-static ssize_t modalias_show(struct device *dev, char *buf)
+static ssize_t modalias_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct pci_dev *pci_dev = to_pci_dev(dev);
 
@@ -83,6 +95,33 @@ static ssize_t modalias_show(struct device *dev, char *buf)
 		       (u8)(pci_dev->class >> 16), (u8)(pci_dev->class >> 8),
 		       (u8)(pci_dev->class));
 }
+
+#ifdef CONFIG_HOTPLUG
+static DEFINE_MUTEX(pci_remove_rescan_mutex);
+static ssize_t bus_rescan_store(struct bus_type *bus, const char *buf,
+				size_t count)
+{
+	unsigned long val;	
+	struct pci_bus *b = NULL;
+	char*         ep;
+
+    val = simple_strtoul(buf, &ep, 0);
+
+	if (val) {
+		mutex_lock(&pci_remove_rescan_mutex);
+		while ((b = pci_find_next_bus(b)) != NULL)
+			pci_rescan_bus(b);
+		mutex_unlock(&pci_remove_rescan_mutex);
+	}
+	return count;
+}
+
+struct bus_attribute pci_bus_attrs[] = {
+	__ATTR(rescan, (S_IWUSR|S_IWGRP), NULL, bus_rescan_store),
+	__ATTR_NULL
+};
+
+#endif
 
 struct device_attribute pci_dev_attrs[] = {
 	__ATTR_RO(resource),

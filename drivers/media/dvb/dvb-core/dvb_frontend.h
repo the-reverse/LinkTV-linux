@@ -98,6 +98,23 @@ struct dvb_frontend_ops {
 	int (*set_voltage)(struct dvb_frontend* fe, fe_sec_voltage_t voltage);
 	int (*enable_high_lnb_voltage)(struct dvb_frontend* fe, int arg);
 	int (*dishnetwork_send_legacy_command)(struct dvb_frontend* fe, unsigned int cmd);
+	
+	// for extra command
+	int (*user_cmd)(struct dvb_frontend* fe, int cmd, int* p_arg_in, int n_arg_in, int* p_arg_out, int n_arg_out);
+	
+#ifdef CONFIG_DVB_FE_DIRECT_PASSTHROUGH
+	// for direct data pass through			
+	int (*passthrough_control)(struct dvb_frontend* fe, dvb_passthrough_cmd cmd, dvb_passthrough_mode mode);
+	int (*set_passthrough_buffer)(struct dvb_frontend* fe, unsigned char* pbuff, unsigned long size); 
+	int (*read_passthrough_data)(struct dvb_frontend* fe, unsigned char** ppbuff, unsigned long* psize); 
+	int (*release_passthrough_data)(struct dvb_frontend* fe, unsigned char* pbuff, unsigned long size);
+	
+	// for pid control
+    int (*get_pid_count) (struct dvb_frontend* fe);	
+    int (*pid_filter_ctrl) (struct dvb_frontend* fe, int on_off);
+	int (*pid_filter) (struct dvb_frontend *fe, int id, u16 pid, int on_off);
+
+#endif
 };
 
 #define MAX_EVENT 8
@@ -112,10 +129,12 @@ struct dvb_fe_events {
 };
 
 struct dvb_frontend {
-	struct dvb_frontend_ops* ops;
-	struct dvb_adapter *dvb;
-	void* demodulator_priv;
-	void* frontend_priv;
+	struct dvb_frontend_ops* 	ops;
+	struct dvb_adapter*     dvb;		
+	void* 					demodulator_priv;
+	void* 					tuner_priv;     // 20070322 kevin add
+	void* 					frontend_priv;
+	int 					ext_flag;
 };
 
 extern int dvb_register_frontend(struct dvb_adapter* dvb,

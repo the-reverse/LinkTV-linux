@@ -1,0 +1,8 @@
+menu "Realtek 802.11x wireless LAN devices"	
+	depends on NET_RADIO	
+
+source "drivers/net/wireless/realtek/usb/Kconfig"
+source "drivers/net/wireless/realtek/pci/Kconfig"
+
+endmenu
+

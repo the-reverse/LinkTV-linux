@@ -76,6 +76,11 @@ static DECLARE_WAIT_QUEUE_HEAD(gen_rtc_wait);
 static unsigned char gen_rtc_status;	/* bitmapped status byte.	*/
 static unsigned long gen_rtc_irq_data;	/* our output to the world	*/
 
+/* rtk_rtc_found will be used to indicate if the RTC can advance */
+atomic_t rtk_rtc_found = ATOMIC_INIT(0);
+static struct timer_list rtk_rtc_timer;
+static struct rtc_time chk_time_1, chk_time_2;
+
 /* months start at 0 now */
 static unsigned char days_in_mo[] =
 {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
@@ -282,6 +287,46 @@ static int gen_rtc_ioctl(struct inode *inode, struct file *file,
 
 	switch (cmd) {
 
+#ifdef CONFIG_REALTEK_VENUS
+	case RTC_ALM_READ:	/* Read the present alarm time */
+	{
+		/*
+		 * This returns a struct rtc_time. Reading >= 0xc0
+		 * means "don't care" or "match all". Only the tm_hour,
+		 * tm_min, and tm_sec values are filled in.
+		 */
+		memset(&wtime, 0, sizeof(wtime));
+		get_rtc_alarm_time(&wtime);
+
+		return copy_to_user(argp, &wtime, sizeof(wtime)) ? -EFAULT : 0;
+	}
+	case RTC_ALM_SET:	/* Store a time into the alarm */
+	{
+		int year;
+		unsigned char leap_yr;
+
+		if (copy_from_user(&wtime, argp, sizeof(wtime)))
+			return -EFAULT;
+
+		year = wtime.tm_year + 1900;
+		leap_yr = ((!(year % 4) && (year % 100)) ||
+			   !(year % 400));
+
+		if ((wtime.tm_mon < 0 || wtime.tm_mon > 11) || (wtime.tm_mday < 1))
+			return -EINVAL;
+
+		if (wtime.tm_mday < 0 || wtime.tm_mday >
+		    (days_in_mo[wtime.tm_mon] + ((wtime.tm_mon == 1) && leap_yr)))
+			return -EINVAL;
+
+		if (wtime.tm_hour < 0 || wtime.tm_hour >= 24 ||
+		    wtime.tm_min < 0 || wtime.tm_min >= 60 ||
+		    wtime.tm_sec < 0 || wtime.tm_sec >= 60)
+			return -EINVAL;
+
+		return set_rtc_alarm_time(&wtime);
+	}
+#endif
 	case RTC_PLL_GET:
 	    if (get_rtc_pll(&pll))
 	 	    return -EINVAL;
@@ -501,6 +546,21 @@ static struct miscdevice rtc_gen_dev =
 	.fops		= &gen_rtc_fops,
 };
 
+/* This timer function will execute 2 seconds later and it will check if the RTC can advance. */
+void check_rtk_rtc_timerfunc(unsigned long data)
+{
+	get_rtc_time(&chk_time_2);
+	if(chk_time_1.tm_sec == chk_time_2.tm_sec &&
+		chk_time_1.tm_min == chk_time_2.tm_min &&
+		chk_time_1.tm_hour == chk_time_2.tm_hour) {
+		printk("RTK rtc cannot work.\n");
+		atomic_set(&rtk_rtc_found, -1);
+	} else {
+		printk("RTK rtc can work.\n");
+		atomic_set(&rtk_rtc_found, 1);
+	}
+}
+
 static int __init rtc_generic_init(void)
 {
 	int retval;
@@ -516,6 +576,12 @@ static int __init rtc_generic_init(void)
 		misc_deregister(&rtc_gen_dev);
 		return retval;
 	}
+
+	get_rtc_time(&chk_time_1);
+	init_timer(&rtk_rtc_timer);
+	rtk_rtc_timer.function = check_rtk_rtc_timerfunc;
+	rtk_rtc_timer.expires = jiffies + 2*HZ;
+	add_timer(&rtk_rtc_timer);
 
 	return 0;
 }

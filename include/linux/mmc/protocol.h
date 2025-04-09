@@ -25,66 +25,60 @@
 #ifndef MMC_MMC_PROTOCOL_H
 #define MMC_MMC_PROTOCOL_H
 
-/* Standard MMC commands (3.1)           type  argument     response */
-   /* class 1 */
-#define	MMC_GO_IDLE_STATE         0   /* bc                          */
-#define MMC_SEND_OP_COND          1   /* bcr  [31:0] OCR         R3  */
-#define MMC_ALL_SEND_CID          2   /* bcr                     R2  */
-#define MMC_SET_RELATIVE_ADDR     3   /* ac   [31:16] RCA        R1  */
-#define MMC_SET_DSR               4   /* bc   [31:16] RCA            */
-#define MMC_SELECT_CARD           7   /* ac   [31:16] RCA        R1  */
-#define MMC_SEND_CSD              9   /* ac   [31:16] RCA        R2  */
-#define MMC_SEND_CID             10   /* ac   [31:16] RCA        R2  */
-#define MMC_READ_DAT_UNTIL_STOP  11   /* adtc [31:0] dadr        R1  */
-#define MMC_STOP_TRANSMISSION    12   /* ac                      R1b */
-#define MMC_SEND_STATUS	         13   /* ac   [31:16] RCA        R1  */
-#define MMC_GO_INACTIVE_STATE    15   /* ac   [31:16] RCA            */
-
-  /* class 2 */
-#define MMC_SET_BLOCKLEN         16   /* ac   [31:0] block len   R1  */
-#define MMC_READ_SINGLE_BLOCK    17   /* adtc [31:0] data addr   R1  */
-#define MMC_READ_MULTIPLE_BLOCK  18   /* adtc [31:0] data addr   R1  */
-
-  /* class 3 */
-#define MMC_WRITE_DAT_UNTIL_STOP 20   /* adtc [31:0] data addr   R1  */
-
-  /* class 4 */
-#define MMC_SET_BLOCK_COUNT      23   /* adtc [31:0] data addr   R1  */
-#define MMC_WRITE_BLOCK          24   /* adtc [31:0] data addr   R1  */
-#define MMC_WRITE_MULTIPLE_BLOCK 25   /* adtc                    R1  */
-#define MMC_PROGRAM_CID          26   /* adtc                    R1  */
-#define MMC_PROGRAM_CSD          27   /* adtc                    R1  */
-
-  /* class 6 */
-#define MMC_SET_WRITE_PROT       28   /* ac   [31:0] data addr   R1b */
-#define MMC_CLR_WRITE_PROT       29   /* ac   [31:0] data addr   R1b */
-#define MMC_SEND_WRITE_PROT      30   /* adtc [31:0] wpdata addr R1  */
-
-  /* class 5 */
-#define MMC_ERASE_GROUP_START    35   /* ac   [31:0] data addr   R1  */
-#define MMC_ERASE_GROUP_END      36   /* ac   [31:0] data addr   R1  */
-#define MMC_ERASE                37   /* ac                      R1b */
-
-  /* class 9 */
-#define MMC_FAST_IO              39   /* ac   <Complex>          R4  */
-#define MMC_GO_IRQ_STATE         40   /* bcr                     R5  */
-
-  /* class 7 */
-#define MMC_LOCK_UNLOCK          42   /* adtc                    R1b */
-
-  /* class 8 */
-#define MMC_APP_CMD              55   /* ac   [31:16] RCA        R1  */
-#define MMC_GEN_CMD              56   /* adtc [0] RD/WR          R1b */
-
-/* SD commands                           type  argument     response */
-  /* class 8 */
-/* This is basically the same command as for MMC with some quirks. */
-#define SD_SEND_RELATIVE_ADDR     3   /* ac                      R6  */
-
-  /* Application commands */
-#define SD_APP_SET_BUS_WIDTH      6   /* ac   [1:0] bus width    R1  */
-#define SD_APP_OP_COND           41   /* bcr  [31:0] OCR         R3  */
-#define SD_APP_SEND_SCR          51   /* adtc                    R1  */
+/*  ===== SD/MMC Command Sets ===== */
+//                                                  Cmd     Resp    MMC     SD
+//                                                  type    type    Class   Class
+#define CMD0_GO_IDLE_STATE              0       //  bc      --      0       0
+#define CMD1_SEND_OP_COND               1       //  bcr     r3      0       --
+#define CMD2_ALL_SEND_CID               2       //  bcr     r2      0       0
+#define CMD3_SET_RELATIVE_ADDR          3       //  ac      r1      0       --
+#define CMD3_SEND_RELATIVE_ADDR         3       //  bcr     r6      --      0
+#define CMD4_SET_DSR                    4       //  bc      --      0       0
+#define CMD6_SWITCH                     6       //  ac      r1b     0       --
+#define CMD6_SWITCH_FUNC                6       //  adtc    r1      --      10
+#define CMD7_SELECT_CARD                7       //  ac      r1      0       --
+//      CMD7_SELECT_CARD                7       //  ac      r1b     --      0
+#define CMD7_DESELECT_CARD              7       //  ac      r1b     0       0
+#define CMD8_SEND_EXT_CSD               8       //  adtc    r1      0       --
+#define CMD8_SEND_IF_COND               8       //  bcr     r7      --      0
+#define CMD9_SEND_CSD                   9       //  ac      r2      0       0
+#define CMD10_SEND_CID                  10      //  ac      r2      0       0
+#define CMD11_READ_DAT_UTIL_STOP        11      //  adtc    r1      1       --
+#define CMD12_STOP_TRANSMISSION         12      //  ac      r1/r1b  0       --
+//      CMD12_STOP_TRANSMISSION         12      //  ac      r1b     --      0
+#define CMD13_SEND_STATUS               13      //  ac      r1      0       0
+#define CMD14_BUSTEST_R                 14      //  adtc    r1      0       --
+#define CMD15_GO_INACTIVE_STATE         15      //  ac      --      0       0
+#define CMD16_SET_BLOCKLEN              16      //  ac      r1      2,4,7   2,4,7
+#define CMD17_READ_SINGLE_BLOCK         17      //  adtc    r1      2       2
+#define CMD18_READ_MULTIPLE_BLOCK       18      //  adtc    r1      2       2
+#define CMD19_BUSTEST_W                 19      //  adtc    r1      0       --
+#define CMD20_WRITE_DAT_UNTIL_STOP      20      //  adtc    r1      3       --
+#define CMD23_SET_BLOCK_COUNT           23      //  ac      r1      2,4     --
+#define CMD24_WRITE_BLOCK               24      //  adtc    r1      4       4
+#define CMD25_WRITE_MULTIPLE_BLOCK      25      //  adtc    r1      4       4
+#define CMD26_PROGRAM_CID               26      //  adtc    r1      4       --
+#define CMD27_PROGRAM_CSD               27      //  adtc    r1      4       4
+#define CMD28_SET_WRITE_PROT            28      //  ac      r1b     6       6
+#define CMD29_CLR_WRITE_PROT            29      //  ac      r1b     6       6
+#define CMD30_SEND_WRITE_PROT           30      //  adtc    r1      6       6
+#define CMD32_ERASE_WR_BLK_START        32      //  ac      r1      --      5
+#define CMD33_ERASE_WR_BLK_END          33      //  ac      r1      --      5
+#define CMD35_ERASE_GROUP_START         35      //  ac      r1      5       --
+#define CMD36_ERASE_GROUP_END           36      //  ac      r1      5       --
+#define CMD38_ERASE                     38      //  ac      r1b     5       5
+#define CMD39_FAST_IO                   39      //  ac      r4      9       --
+#define CMD40_GO_IRQ_STATE              40      //  bcr     r5      9       --
+#define CMD42_LOCK_UNLOCK               42      //  adtc    r1      7       7
+#define CMD55_APP_CMD                   55      //  ac      r1      8       8
+#define CMD56_GEN_CMD                   56      //  adtc    r1      8       8
+#define ACMD6_SET_BUS_WIDTH             6       //  ac      r1      --      app
+#define ACMD13_SD_STATUS                13      //  adtc    r1      --      app
+#define ACMD22_SEND_NUM_WR_BLOCK        22      //  adtc    r1      --      app
+#define ACMD23_SET_WR_BLK_ERASE_COUNT   23      //  ac      r1      --      app
+#define ACMD41_SD_APP_OP_COND           41      //  bcr     r3      --      app
+#define ACMD42_SET_CLR_CARD_DETECT      42      //  ac      r1      --      app
+#define ACMD51_SEND_SCR                 51      //  adtc    r1      --      app
 
 /*
   MMC status in R1
@@ -101,29 +95,29 @@
 	c : clear by read
  */
 
-#define R1_OUT_OF_RANGE		(1 << 31)	/* er, c */
-#define R1_ADDRESS_ERROR	(1 << 30)	/* erx, c */
-#define R1_BLOCK_LEN_ERROR	(1 << 29)	/* er, c */
+#define R1_OUT_OF_RANGE		    (1 << 31)	/* er, c */
+#define R1_ADDRESS_ERROR	    (1 << 30)	/* erx, c */
+#define R1_BLOCK_LEN_ERROR	    (1 << 29)	/* er, c */
 #define R1_ERASE_SEQ_ERROR      (1 << 28)	/* er, c */
-#define R1_ERASE_PARAM		(1 << 27)	/* ex, c */
-#define R1_WP_VIOLATION		(1 << 26)	/* erx, c */
-#define R1_CARD_IS_LOCKED	(1 << 25)	/* sx, a */
+#define R1_ERASE_PARAM		    (1 << 27)	/* ex, c */
+#define R1_WP_VIOLATION		    (1 << 26)	/* erx, c */
+#define R1_CARD_IS_LOCKED	    (1 << 25)	/* sx, a */
 #define R1_LOCK_UNLOCK_FAILED	(1 << 24)	/* erx, c */
-#define R1_COM_CRC_ERROR	(1 << 23)	/* er, b */
-#define R1_ILLEGAL_COMMAND	(1 << 22)	/* er, b */
-#define R1_CARD_ECC_FAILED	(1 << 21)	/* ex, c */
-#define R1_CC_ERROR		(1 << 20)	/* erx, c */
-#define R1_ERROR		(1 << 19)	/* erx, c */
-#define R1_UNDERRUN		(1 << 18)	/* ex, c */
-#define R1_OVERRUN		(1 << 17)	/* ex, c */
+#define R1_COM_CRC_ERROR	    (1 << 23)	/* er, b */
+#define R1_ILLEGAL_COMMAND	    (1 << 22)	/* er, b */
+#define R1_CARD_ECC_FAILED	    (1 << 21)	/* ex, c */
+#define R1_CC_ERROR		        (1 << 20)	/* erx, c */
+#define R1_ERROR		        (1 << 19)	/* erx, c */
+#define R1_UNDERRUN		        (1 << 18)	/* ex, c */
+#define R1_OVERRUN		        (1 << 17)	/* ex, c */
 #define R1_CID_CSD_OVERWRITE	(1 << 16)	/* erx, c, CID/CSD overwrite */
-#define R1_WP_ERASE_SKIP	(1 << 15)	/* sx, c */
+#define R1_WP_ERASE_SKIP	    (1 << 15)	/* sx, c */
 #define R1_CARD_ECC_DISABLED	(1 << 14)	/* sx, a */
-#define R1_ERASE_RESET		(1 << 13)	/* sr, c */
+#define R1_ERASE_RESET		    (1 << 13)	/* sr, c */
 #define R1_STATUS(x)            (x & 0xFFFFE000)
 #define R1_CURRENT_STATE(x)    	((x & 0x00001E00) >> 9)	/* sx, b (4 bits) */
-#define R1_READY_FOR_DATA	(1 << 8)	/* sx, a */
-#define R1_APP_CMD		(1 << 5)	/* sr, c */
+#define R1_READY_FOR_DATA	    (1 << 8)	/* sx, a */
+#define R1_APP_CMD		        (1 << 5)	/* sr, c */
 
 /* These are unpacked versions of the actual responses */
 
@@ -194,34 +188,39 @@ struct _mmc_csd {
 #define MMC_VDD_34_35	0x00400000	/* VDD voltage 3.4 ~ 3.5 */
 #define MMC_VDD_35_36	0x00800000	/* VDD voltage 3.5 ~ 3.6 */
 #define MMC_CARD_BUSY	0x80000000	/* Card Power up status bit */
+#define RTL_HOST_VDD	MMC_VDD_33_34|MMC_VDD_32_33|MMC_VDD_31_32|MMC_VDD_30_31
+
+
+//CMYu, 20090625
+#define SD_CCS	0x40000000	/* Card Power up status bit */
 
 /*
  * Card Command Classes (CCC)
  */
-#define CCC_BASIC		(1<<0)	/* (0) Basic protocol functions */
-					/* (CMD0,1,2,3,4,7,9,10,12,13,15) */
+#define CCC_BASIC		    (1<<0)	/* (0) Basic protocol functions */
+					                /* (CMD0,1,2,3,4,7,9,10,12,13,15) */
 #define CCC_STREAM_READ		(1<<1)	/* (1) Stream read commands */
-					/* (CMD11) */
+					                /* (CMD11) */
 #define CCC_BLOCK_READ		(1<<2)	/* (2) Block read commands */
-					/* (CMD16,17,18) */
+					                /* (CMD16,17,18) */
 #define CCC_STREAM_WRITE	(1<<3)	/* (3) Stream write commands */
-					/* (CMD20) */
+					                /* (CMD20) */
 #define CCC_BLOCK_WRITE		(1<<4)	/* (4) Block write commands */
-					/* (CMD16,24,25,26,27) */
-#define CCC_ERASE		(1<<5)	/* (5) Ability to erase blocks */
-					/* (CMD32,33,34,35,36,37,38,39) */
+					                /* (CMD16,24,25,26,27) */
+#define CCC_ERASE		    (1<<5)	/* (5) Ability to erase blocks */
+					                /* (CMD32,33,34,35,36,37,38,39) */
 #define CCC_WRITE_PROT		(1<<6)	/* (6) Able to write protect blocks */
-					/* (CMD28,29,30) */
+					                /* (CMD28,29,30) */
 #define CCC_LOCK_CARD		(1<<7)	/* (7) Able to lock down card */
-					/* (CMD16,CMD42) */
+					                /* (CMD16,CMD42) */
 #define CCC_APP_SPEC		(1<<8)	/* (8) Application specific */
-					/* (CMD55,56,57,ACMD*) */
-#define CCC_IO_MODE		(1<<9)	/* (9) I/O mode */
-					/* (CMD5,39,40,52,53) */
-#define CCC_SWITCH		(1<<10)	/* (10) High speed switch */
-					/* (CMD6,34,35,36,37,50) */
-					/* (11) Reserved */
-					/* (CMD?) */
+					                /* (CMD55,56,57,ACMD*) */
+#define CCC_IO_MODE		    (1<<9)	/* (9) I/O mode */
+					                /* (CMD5,39,40,52,53) */
+#define CCC_SWITCH		    (1<<10)	/* (10) High speed switch */
+					                /* (CMD6,34,35,36,37,50) */
+					                /* (11) Reserved */
+					                /* (CMD?) */
 
 /*
  * CSD field definitions

@@ -4,12 +4,6 @@
 #include <linux/bitops.h>
 #include <linux/slab.h>
 #include <linux/init.h>
-
-#ifdef CONFIG_USB_DEBUG
-	#define DEBUG
-#else
-	#undef DEBUG
-#endif
 #include <linux/usb.h>
 #include "hcd.h"
 
@@ -289,8 +283,10 @@ int usb_submit_urb(struct urb *urb, int mem_flags)
 			return -EINVAL;
 		for (n = 0; n < urb->number_of_packets; n++) {
 			len = urb->iso_frame_desc [n].length;
+#if 0 // add by cfyeh
 			if (len < 0 || len > max) 
 				return -EMSGSIZE;
+#endif
 			urb->iso_frame_desc [n].status = -EXDEV;
 			urb->iso_frame_desc [n].actual_length = 0;
 		}
@@ -491,8 +487,22 @@ int usb_unlink_urb(struct urb *urb)
  */
 void usb_kill_urb(struct urb *urb)
 {
+#if 0
 	if (!(urb && urb->dev && urb->dev->bus && urb->dev->bus->op))
 		return;
+#else
+	if (!(urb && urb->dev))
+		return;
+	if (!(urb->dev->bus && ((unsigned int)urb->dev->bus > 0x80000000))) {
+		if(!((unsigned int)urb->dev->bus > 0x80000000)) {
+			printk("#######[cfyeh-debug] %s(%d) urb->dev->bus 0x%.8x, fail !!!\n", __func__, __LINE__, urb->dev->bus);
+			urb->dev->bus = NULL;
+		}
+		return;
+	}
+	if (!urb->dev->bus->op)
+		return;
+#endif
 	spin_lock_irq(&urb->lock);
 	++urb->reject;
 	spin_unlock_irq(&urb->lock);

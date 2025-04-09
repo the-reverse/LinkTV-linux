@@ -34,6 +34,10 @@
  */
 #include <scsi/scsi_cmnd.h>
 
+#ifdef	CONFIG_REALTEK_MONITOR_PAGE
+extern unsigned long	monitor_pfn;
+#endif
+
 static void blk_unplug_work(void *data);
 static void blk_unplug_timeout(unsigned long data);
 
@@ -2135,7 +2139,9 @@ struct request *blk_rq_map_user(request_queue_t *q, int rw, void __user *ubuf,
 	 * direct dma. else, set up kernel bounce buffers
 	 */
 	uaddr = (unsigned long) ubuf;
-	if (!(uaddr & queue_dma_alignment(q)) && !(len & queue_dma_alignment(q)))
+	//david0506: for AUDIO CD reading subchannel
+	//if (!(uaddr & queue_dma_alignment(q)) && !(len & queue_dma_alignment(q)))
+	if (!(uaddr & queue_dma_alignment(q)) && !(len & queue_dma_alignment(q)) && len !=2368)
 		bio = bio_map_user(q, NULL, uaddr, len, rw == READ);
 	else
 		bio = bio_copy_user(q, uaddr, len, rw == READ);
@@ -3047,6 +3053,27 @@ void blk_recalc_rq_sectors(struct request *rq, int nsect)
 	}
 }
 
+#ifdef	CONFIG_REALTEK_MONITOR_PAGE
+static void check_pfn(struct bio *bio, int idx, int size)
+{
+	struct page *page;
+
+	if (monitor_pfn == 0)
+		return;
+	page = bio_iovec_idx(bio, idx)->bv_page+(bio_iovec_idx(bio, idx)->bv_offset/4096);
+	do {
+		if (page_to_pfn(page) == monitor_pfn) {
+			printk("\n\n============================================\n");
+			printk("pfn value: %d, size: %d, option: %s", page_to_pfn(page), size, 
+					bio->bi_rw & 0x1? "write" : "read");
+			printk("\n============================================\n\n");
+		}
+		page++;
+		size -= 4096;
+	} while (size > 0);
+}
+#endif
+
 static int __end_that_request_first(struct request *req, int uptodate,
 				    int nr_bytes)
 {
@@ -3069,9 +3096,9 @@ static int __end_that_request_first(struct request *req, int uptodate,
 
 	if (!uptodate) {
 		if (blk_fs_request(req) && !(req->flags & REQ_QUIET))
-			printk("end_request: I/O error, dev %s, sector %llu\n",
+			printk("end_request: I/O error, dev %s, sector %llu , pid(%i) comm(%s)\n",
 				req->rq_disk ? req->rq_disk->disk_name : "?",
-				(unsigned long long)req->sector);
+				(unsigned long long)req->sector, current->pid, current->comm);
 	}
 
 	total_bytes = bio_nbytes = 0;
@@ -3079,11 +3106,23 @@ static int __end_that_request_first(struct request *req, int uptodate,
 		int nbytes;
 
 		if (nr_bytes >= bio->bi_size) {
+#ifdef	CONFIG_REALTEK_MONITOR_PAGE
+			int idx;
+#endif
+
 			req->bio = bio->bi_next;
 			nbytes = bio->bi_size;
 			bio_endio(bio, nbytes, error);
 			next_idx = 0;
 			bio_nbytes = 0;
+
+#ifdef	CONFIG_REALTEK_MONITOR_PAGE
+			idx = bio->bi_idx;
+			while (idx < bio->bi_vcnt) {
+				check_pfn(bio, idx, bio_iovec_idx(bio, idx)->bv_len);
+				idx++;
+			}
+#endif
 		} else {
 			int idx = bio->bi_idx + next_idx;
 
@@ -3102,10 +3141,18 @@ static int __end_that_request_first(struct request *req, int uptodate,
 			 * not a complete bvec done
 			 */
 			if (unlikely(nbytes > nr_bytes)) {
+#ifdef	CONFIG_REALTEK_MONITOR_PAGE
+				check_pfn(bio, idx, nr_bytes);
+#endif
+
 				bio_nbytes += nr_bytes;
 				total_bytes += nr_bytes;
 				break;
 			}
+#ifdef	CONFIG_REALTEK_MONITOR_PAGE
+			else
+				check_pfn(bio, idx, nbytes);
+#endif
 
 			/*
 			 * advance to the next vector

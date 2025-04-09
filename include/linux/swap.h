@@ -172,8 +172,9 @@ extern int rotate_reclaimable_page(struct page *page);
 extern void swap_setup(void);
 
 /* linux/mm/vmscan.c */
-extern int try_to_free_pages(struct zone **, unsigned int, unsigned int);
+extern int try_to_free_pages(struct zone **, unsigned int, unsigned int, int *);
 extern int shrink_all_memory(int);
+extern int shrink_page_cache(struct address_space *mapping);
 extern int vm_swappiness;
 
 #ifdef CONFIG_MMU
@@ -193,7 +194,7 @@ extern int rw_swap_page_sync(int, swp_entry_t, struct page *);
 extern struct address_space swapper_space;
 #define total_swapcache_pages  swapper_space.nrpages
 extern void show_swap_cache_info(void);
-extern int add_to_swap(struct page *);
+extern int add_to_swap(struct page *, int urgent);
 extern void __delete_from_swap_cache(struct page *);
 extern void delete_from_swap_cache(struct page *);
 extern int move_to_swap_cache(struct page *, swp_entry_t);
@@ -209,7 +210,7 @@ extern long total_swap_pages;
 extern unsigned int nr_swapfiles;
 extern struct swap_info_struct swap_info[];
 extern void si_swapinfo(struct sysinfo *);
-extern swp_entry_t get_swap_page(void);
+extern swp_entry_t get_swap_page(int urgent);
 extern int swap_duplicate(swp_entry_t);
 extern int valid_swaphandles(swp_entry_t, unsigned long *);
 extern void swap_free(swp_entry_t);
@@ -217,7 +218,11 @@ extern void free_swap_and_cache(swp_entry_t);
 extern sector_t map_swap_page(struct swap_info_struct *, pgoff_t);
 extern struct swap_info_struct *get_swap_info_struct(unsigned);
 extern int can_share_swap_page(struct page *);
-extern int remove_exclusive_swap_page(struct page *);
+extern int __remove_exclusive_swap_page(struct page *, int);
+static inline int remove_exclusive_swap_page(struct page *p)
+{
+	return __remove_exclusive_swap_page(p, 0);
+}
 struct backing_dev_info;
 
 extern struct swap_list_t swap_list;
@@ -271,12 +276,17 @@ static inline void put_swap_token(struct mm_struct *mm)
 #define delete_from_swap_cache(p)		/*NOTHING*/
 #define swap_token_default_timeout		0
 
-static inline int remove_exclusive_swap_page(struct page *p)
+static inline int __remove_exclusive_swap_page(struct page *p)
 {
 	return 0;
 }
 
-static inline swp_entry_t get_swap_page(void)
+static inline int remove_exclusive_swap_page(struct page *p)
+{
+	return __remove_exclusive_swap_page(p);
+}
+
+static inline swp_entry_t get_swap_page(int u)
 {
 	swp_entry_t entry;
 	entry.val = 0;

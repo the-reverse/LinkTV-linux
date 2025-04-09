@@ -70,6 +70,7 @@ struct scsi_device {
 	char inq_periph_qual;	/* PQ from INQUIRY data */	
 	unsigned char inquiry_len;	/* valid bytes in 'inquiry' */
 	unsigned char * inquiry;	/* INQUIRY response data */
+	unsigned char inquiry_data[0x40];
 	char * vendor;		/* [back_compat] point into 'inquiry' ... */
 	char * model;		/* ... after scan; point to static string */
 	char * rev;		/* ... "nullnullnullnull" before scan */

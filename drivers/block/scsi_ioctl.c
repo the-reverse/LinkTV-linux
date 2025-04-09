@@ -30,6 +30,9 @@
 #include <scsi/scsi.h>
 #include <scsi/scsi_ioctl.h>
 #include <scsi/scsi_cmnd.h>
+#include <scsi/scsi_device.h>
+#include "../scsi/sr.h"
+
 
 /* Command group 3 is reserved and should never be used.  */
 const unsigned char scsi_command_size[8] =
@@ -77,6 +80,8 @@ static int sg_set_timeout(request_queue_t *q, int __user *p)
 
 static int sg_get_reserved_size(request_queue_t *q, int __user *p)
 {
+	if(q->sg_reserved_size == 0)
+		q->sg_reserved_size = q->max_sectors << 9;
 	return put_user(q->sg_reserved_size, p);
 }
 
@@ -300,6 +305,19 @@ static int sg_io(struct file *file, request_queue_t *q,
 	 */
 	blk_execute_rq(q, bd_disk, rq);
 
+	if(1){  /*record unit_attention status -- fixed for mini_BD -- alex*/
+        int err;
+        struct scsi_cd *cd = container_of(bd_disk->private_data, struct scsi_cd, driver);
+        err = rq->errors & 0xff;
+        if (err) {
+		    if (rq->sense_len && rq->sense) {
+			    if((sense[2] &0x0f )==UNIT_ATTENTION)
+			        cd->device->changed = 1;
+
+		    }
+	    }
+	}
+
 	/* write to all output members */
 	hdr->status = 0xff & rq->errors;
 	hdr->masked_status = status_byte(rq->errors);
@@ -421,7 +439,7 @@ static int sg_scsi_ioctl(struct file *file, request_queue_t *q,
 		if (copy_to_user(sic->data, buffer, out_len))
 			err = -EFAULT;
 	}
-	
+
 error:
 	kfree(buffer);
 	blk_put_request(rq);
@@ -471,10 +489,28 @@ int scsi_cmd_ioctl(struct file *file, struct gendisk *bd_disk, unsigned int cmd,
 			break;
 		case SG_IO: {
 			struct sg_io_hdr hdr;
+			unsigned char buf[0x40];
 
 			err = -EFAULT;
 			if (copy_from_user(&hdr, arg, sizeof(hdr)))
 				break;
+			if (copy_from_user(buf, hdr.cmdp, hdr.cmd_len))
+				break;
+			//printk("#@# cfyeh-debug %s(%d) 0x%.2x 0x%.2x 0x%.2x 0x%.2x \n", __func__, __LINE__, buf[0], buf[1], buf[2], buf[3]);
+			if (buf[0] == INQUIRY) {
+				//printk("#@# cfyeh-debug %s(%d) 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x\n", __func__, __LINE__, bd_disk->inquiry_data[0], bd_disk->inquiry_data[1], bd_disk->inquiry_data[2], bd_disk->inquiry_data[3], bd_disk->inquiry_data[4], bd_disk->inquiry_data[5], bd_disk->inquiry_data[6], bd_disk->inquiry_data[7]);
+				if (bd_disk->inquiry_len) {
+					if (copy_to_user(hdr.dxferp, bd_disk->inquiry_data, bd_disk->inquiry_len))
+						break;
+					hdr.info |= SG_INFO_OK;
+					if (copy_to_user(arg, &hdr, sizeof(hdr))) {
+						err = -EFAULT;
+						break;
+					}
+					err = 0;
+					break;
+				}
+			}
 			err = sg_io(file, q, bd_disk, &hdr);
 			if (err == -EFAULT)
 				break;

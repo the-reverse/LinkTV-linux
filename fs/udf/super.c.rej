@@ -1,0 +1,136 @@
+***************
+*** 1305,1310 ****
+  udf_load_partdesc(struct super_block *sb, struct buffer_head *bh)
+  {
+  	struct partitionDesc *p;
+  	int i;
+  
+  	p = (struct partitionDesc *)bh->b_data;
+--- 1389,1395 ----
+  udf_load_partdesc(struct super_block *sb, struct buffer_head *bh)
+  {
+  	struct partitionDesc *p;
++ 	int matched_part_desc=0;
+  	int i;
+  
+  	p = (struct partitionDesc *)bh->b_data;
+***************
+*** 1315,1320 ****
+  			UDF_SB_PARTMAPS(sb)[i].s_partition_num, le16_to_cpu(p->partitionNumber));
+  		if (UDF_SB_PARTMAPS(sb)[i].s_partition_num == le16_to_cpu(p->partitionNumber))
+  		{
+  			UDF_SB_PARTLEN(sb,i) = le32_to_cpu(p->partitionLength); /* blocks */
+  			UDF_SB_PARTROOT(sb,i) = le32_to_cpu(p->partitionStartingLocation);
+  			if (le32_to_cpu(p->accessType) == PD_ACCESS_TYPE_READ_ONLY)
+--- 1400,1407 ----
+  			UDF_SB_PARTMAPS(sb)[i].s_partition_num, le16_to_cpu(p->partitionNumber));
+  		if (UDF_SB_PARTMAPS(sb)[i].s_partition_num == le16_to_cpu(p->partitionNumber))
+  		{
++ 			matched_part_desc++;
++ 			udf_debug("Found desc for part %d id(%d)\n",i,UDF_SB_PARTMAPS(sb)[i].s_partition_num);
+  			UDF_SB_PARTLEN(sb,i) = le32_to_cpu(p->partitionLength); /* blocks */
+  			UDF_SB_PARTROOT(sb,i) = le32_to_cpu(p->partitionStartingLocation);
+  			if (le32_to_cpu(p->accessType) == PD_ACCESS_TYPE_READ_ONLY)
+***************
+*** 1383,1401 ****
+  					}
+  				}
+  			}
+- 			break;
+  		}
+  	}
+- 	if (i == UDF_SB_NUMPARTS(sb))
+  	{
+  		udf_debug("Partition (%d) not found in partition map\n", le16_to_cpu(p->partitionNumber));
+  	}
+  	else
+  	{
+  		udf_debug("Partition (%d:%d type %x) starts at physical %d, block length %d\n",
+  			le16_to_cpu(p->partitionNumber), i, UDF_SB_PARTTYPE(sb,i),
+  			UDF_SB_PARTROOT(sb,i), UDF_SB_PARTLEN(sb,i));
+  	}
+  }
+  
+  static int 
+--- 1470,1491 ----
+  					}
+  				}
+  			}
+  		}
+  	}
++ 	
++ 	if (matched_part_desc == 0)
+  	{
+  		udf_debug("Partition (%d) not found in partition map\n", le16_to_cpu(p->partitionNumber));
+  	}
+  	else
+  	{
++ 		for (i=0; i<UDF_SB_NUMPARTS(sb); i++)
++ 		{
+  		udf_debug("Partition (%d:%d type %x) starts at physical %d, block length %d\n",
+  			le16_to_cpu(p->partitionNumber), i, UDF_SB_PARTTYPE(sb,i),
+  			UDF_SB_PARTROOT(sb,i), UDF_SB_PARTLEN(sb,i));
+  	}
++ 	}
+  }
+  
+  static int 
+***************
+*** 1444,1450 ****
+  				uint16_t ident;
+  				struct sparingTable *st;
+  				struct sparablePartitionMap *spm = (struct sparablePartitionMap *)&(lvd->partitionMaps[offset]);
+- 
+  				UDF_SB_PARTTYPE(sb,i) = UDF_SPARABLE_MAP15;
+  				UDF_SB_TYPESPAR(sb,i).s_packet_len = le16_to_cpu(spm->packetLength);
+  				for (j=0; j<spm->numSparingTables; j++)
+--- 1534,1540 ----
+  				uint16_t ident;
+  				struct sparingTable *st;
+  				struct sparablePartitionMap *spm = (struct sparablePartitionMap *)&(lvd->partitionMaps[offset]);
++ 				udf_debug("Parsing Logical vol part %d type %d  id=%s\n",i,type,UDF_ID_SPARABLE);
+  				UDF_SB_PARTTYPE(sb,i) = UDF_SPARABLE_MAP15;
+  				UDF_SB_TYPESPAR(sb,i).s_packet_len = le16_to_cpu(spm->packetLength);
+  				for (j=0; j<spm->numSparingTables; j++)
+***************
+*** 1970,1975 ****
+  		goto error_out;
+  	}
+  
+  	if ( udf_find_fileset(sb, &fileset, &rootdir) )
+  	{
+  		printk("UDF-fs: No fileset found\n");
+--- 2083,2099 ----
+  		goto error_out;
+  	}
+  
++ 	/* check for metadata partitions and load the associated data if there's any found */
++ 	for (i = 0; i < UDF_SB_NUMPARTS(sb); i++)
++ 	{
++ 		if( (UDF_SB_PARTTYPE(sb, i) == UDF_METADATA_MAP25) &&
++ 		    udf_load_metadata_file_entries(sb, i, &fileset) )
++ 		{
++ 			printk( "UDF-fs: error loading MetaData partition map %d\n", i );
++ 			goto error_out;
++ 		}
++ 	}
++ 	
+  	if ( udf_find_fileset(sb, &fileset, &rootdir) )
+  	{
+  		printk("UDF-fs: No fileset found\n");
+***************
+*** 2011,2016 ****
+  	return 0;
+  
+  error_out:
+  	if (UDF_SB_VAT(sb))
+  		iput(UDF_SB_VAT(sb));
+  	if (UDF_SB_NUMPARTS(sb))
+--- 2135,2141 ----
+  	return 0;
+  
+  error_out:
++ 	udf_release_metadata(sb);
+  	if (UDF_SB_VAT(sb))
+  		iput(UDF_SB_VAT(sb));
+  	if (UDF_SB_NUMPARTS(sb))

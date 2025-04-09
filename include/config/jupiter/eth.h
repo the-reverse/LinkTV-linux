@@ -1,0 +1,1 @@
+#define CONFIG_JUPITER_ETH 1

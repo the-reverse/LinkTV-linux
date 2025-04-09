@@ -14,7 +14,12 @@ obj-$(CONFIG_UNIX98_PTYS)	+= pty.o
 obj-y				+= misc.o
 obj-$(CONFIG_VT)		+= vt_ioctl.o vc_screen.o consolemap.o \
 				   consolemap_deftbl.o selection.o keyboard.o
-obj-$(CONFIG_HW_CONSOLE)	+= vt.o defkeymap.o
+ifdef CONFIG_REALTEK_USE_RTD_KEYMAP
+obj-$(CONFIG_HW_CONSOLE)	+= vt.o rtd_keymap.o
+else
+obj-$(CONFIG_HW_CONSOLE)    += vt.o defkeymap.o
+endif
+
 obj-$(CONFIG_MAGIC_SYSRQ)	+= sysrq.o
 obj-$(CONFIG_ESPSERIAL)		+= esp.o
 obj-$(CONFIG_MVME147_SCC)	+= generic_serial.o vme_scc.o
@@ -96,7 +101,11 @@ obj-$(CONFIG_IPMI_HANDLER) += ipmi/
 obj-$(CONFIG_HANGCHECK_TIMER) += hangcheck-timer.o
 obj-$(CONFIG_TCG_TPM) += tpm/
 # Files generated that shall be removed upon make clean
+ifdef CONFIG_REALTEK_USE_RTD_KEYMAP
+clean-files := consolemap_deftbl.c defkeymap.c qtronixmap.c ibm_workpad_keymap.c rtd_keymap.c
+else
 clean-files := consolemap_deftbl.c defkeymap.c qtronixmap.c ibm_workpad_keymap.c
+endif
 
 quiet_cmd_conmk = CONMK   $@
       cmd_conmk = scripts/conmakehash $< > $@
@@ -110,6 +119,10 @@ $(obj)/qtronixmap.o: $(obj)/qtronixmap.c
 
 $(obj)/ibm_workpad_keymap.o: $(obj)/ibm_workpad_keymap.c
 
+ifdef CONFIG_REALTEK_USE_RTD_KEYMAP
+$(obj)/rtd_keymap.o:  $(obj)/rtd_keymap.c
+endif
+
 # Uncomment if you're changing the keymap and have an appropriate
 # loadkeys version for the map. By default, we'll use the shipped
 # versions.
@@ -117,10 +130,14 @@ $(obj)/ibm_workpad_keymap.o: $(obj)/ibm_workpad_keymap.c
 
 ifdef GENERATE_KEYMAP
 
+ifdef CONFIG_REALTEK_USE_RTD_KEYMAP
+$(obj)/defkeymap.c $(obj)/qtronixmap.c $(obj)/ibm_workpad_keymap.c $(obj)/rtd_keymap.c: \
+        $(obj)/%.c: $(src)/%.map
+else
 $(obj)/defkeymap.c $(obj)/qtronixmap.c $(obj)/ibm_workpad_keymap.c: \
 		$(obj)/%.c: $(src)/%.map
+endif
 	loadkeys --mktable $< > $@.tmp
 	sed -e 's/^static *//' $@.tmp > $@
 	rm $@.tmp
-
-endif
+endif # GENERATE_KEYMAP

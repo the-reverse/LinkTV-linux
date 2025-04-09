@@ -2,7 +2,8 @@
 # USB Storage driver configuration
 #
 
-comment "NOTE: USB_STORAGE enables SCSI, and 'SCSI disk support' may also be needed; see USB_STORAGE Help for more information"
+comment "NOTE: USB_STORAGE enables SCSI, and 'SCSI disk support'"
+comment "may also be needed; see USB_STORAGE Help for more information"
 	depends on USB
 
 config USB_STORAGE
@@ -30,6 +31,26 @@ config USB_STORAGE_DEBUG
 	help
 	  Say Y here in order to have the USB Mass Storage code generate
 	  verbose debugging messages.
+
+config USB_STORAGE_SPEEDUP
+	bool "USB Mass Storage speed up some port"
+	depends on USB_STORAGE
+	help
+	  Say Y here in order to speed up some port.
+
+config USB_STORAGE_SPEEDUP_DEVPATH
+	string "USB Mass Storage speed up port structure"
+	depends on USB_STORAGE_SPEEDUP
+	default "1.1"
+	help
+	  devpath to speedup
+
+config USB_STORAGE_SPEEDUP_TIME
+	int "USB Mass Storage speed up time(sec)"
+	depends on USB_STORAGE_SPEEDUP
+	default 2
+	help
+	  time to speedup
 
 config USB_STORAGE_DATAFAB
 	bool "Datafab Compact Flash Reader support (EXPERIMENTAL)"
@@ -111,3 +132,14 @@ config USB_STORAGE_JUMPSHOT
 	  Say Y here to include additional code to support the Lexar Jumpshot
 	  USB CompactFlash reader.
 
+config USB_STORAGE_ONETOUCH
+	bool "Support OneTouch Button on Maxtor Hard Drives (EXPERIMENTAL)"
+	depends on USB_STORAGE && INPUT_EVDEV && EXPERIMENTAL
+	help
+	  Say Y here to include additional code to support the Maxtor OneTouch
+	  USB hard drive's onetouch button.
+
+	  This code registers the button on the front of Maxtor OneTouch USB
+	  hard drive's as an input device. An action can be associated with
+	  this input in any keybinding software. (e.g. gnome's keyboard short-
+	  cuts)

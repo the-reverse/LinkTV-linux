@@ -80,6 +80,8 @@ struct hd_struct {
 	struct kobject kobj;
 	unsigned reads, read_sectors, writes, write_sectors;
 	int policy, partno;
+	int part_serial; /*  2009/06/15 cfyeh : partiton serial */
+	int is_efi_system_partition;
 };
 
 #define GENHD_FL_REMOVABLE			1
@@ -112,6 +114,15 @@ struct gendisk {
 	int flags;
 	char devfs_name[64];		/* devfs crap */
 	int number;			/* more of the same */
+	int part_num;			/*  2007/05/23 cfyeh : partiton number */
+	// add to know which partition is a extended partition
+	// by cfyeh 2007/11/13 +
+	int part_extended;
+	// by cfyeh 2007/11/13 -
+	int part_extended_serial;	/*  2009/06/23 cfyeh : partiton extended serial */
+	char port_structure[32];	/*  2009/03/03 cfyeh : port structure */
+	char bus_type[8];		/*  2009/03/04 cfyeh : bus type */
+	int signature;			/*  2009/04/22 cfyeh : signature */
 	struct device *driverfs_dev;
 	struct kobject kobj;
 
@@ -126,6 +137,8 @@ struct gendisk {
 #else
 	struct disk_stats dkstats;
 #endif
+	unsigned char inquiry_len;
+	unsigned char inquiry_data[0x40];
 };
 
 /* Structure for sysfs attributes on block devices */

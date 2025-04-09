@@ -162,6 +162,15 @@ static int read_pages(struct address_space *mapping, struct file *filp,
 
 	if (mapping->a_ops->readpages) {
 		ret = mapping->a_ops->readpages(filp, mapping, pages, nr_pages);
+		/* Clean up the remaining pages */
+		while (!list_empty(pages)) {
+			struct page *victim;
+ 
+			victim = list_entry(pages->prev, struct page, lru);
+			list_del(&victim->lru);
+			page_cache_release(victim);
+		}
+
 		goto out;
 	}
 
@@ -268,7 +277,6 @@ __do_page_cache_readahead(struct address_space *mapping, struct file *filp,
 		goto out;
 
  	end_index = ((isize - 1) >> PAGE_CACHE_SHIFT);
-
 	/*
 	 * Preallocate as many pages as we will need.
 	 */
@@ -301,6 +309,17 @@ __do_page_cache_readahead(struct address_space *mapping, struct file *filp,
 	 */
 	if (ret)
 		read_pages(mapping, filp, &page_pool, ret);
+/*	
+	{
+        int iret;
+//printk(KERN_WARNING " readahead offset %li nr_to_read %li ",offset,nr_to_read);
+//printk(KERN_WARNING " ** 1 ret = %i ",ret);
+        iret=read_pages(mapping, filp, &page_pool, ret);
+        if(iret<0) // jason add for error handle 2006.12.26
+            goto out;
+//printk(KERN_WARNING " ** 2 read_pages iret = %i \n",iret);
+	}
+*/	
 	BUG_ON(!list_empty(&page_pool));
 out:
 	return ret;
@@ -441,6 +460,23 @@ page_cache_readahead(struct address_space *mapping, struct file_ra_state *ra,
 {
 	unsigned long max, newsize;
 	int sequential;
+
+#ifdef CONFIG_REALTEK_TEXT_DEBUG
+	/* In order to prevent the read-ahead (pages in read-ahead window might not allocated in text memory zone) */
+	ra->size = max(1, req_size);
+	ra->start = offset;
+	ra->prev_page = ra->start+ra->size-1;
+	blockable_page_cache_readahead(mapping, filp, offset, ra->size, ra, 1);
+	return ra->prev_page + 1;
+#endif
+
+	if (test_bit(AS_LIMIT_SIZE, &mapping->flags)) {
+		ra->size = max(1, req_size);
+		ra->start = offset;
+		ra->prev_page = ra->start+ra->size-1;
+		blockable_page_cache_readahead(mapping, filp, offset, ra->size, ra, 1);
+		return ra->prev_page + 1;
+	}
 
 	/*
 	 * We avoid doing extra work and bogusly perturbing the readahead

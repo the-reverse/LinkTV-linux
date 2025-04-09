@@ -88,6 +88,23 @@ static void usb_mouse_irq(struct urb *urb, struct pt_regs *regs)
 	input_report_rel(dev, REL_Y,     data[2]);
 	input_report_rel(dev, REL_WHEEL, data[3]);
 
+#if 0
+#ifdef CONFIG_REALTEK_VENUS_USB		//cfyeh+ 2005/11/07
+	if(data[0] & 0x01)
+		printk("<1>%s : LEFT Button\n",__FUNCTION__);
+	if(data[0] & 0x02)
+		printk("<1>%s : RIGHT Button\n",__FUNCTION__);
+	if(data[0] & 0x04)
+		printk("<1>%s : MIDDLE Button\n",__FUNCTION__);
+	if(data[0] & 0x08)
+		printk("<1>%s : SIDE Button\n",__FUNCTION__);
+	if(data[0] & 0x10)
+		printk("<1>%s : EXTRA Button\n",__FUNCTION__);
+	
+	printk("<1>%s : X = %.3d, Y = %.3d, WHEEL = %.3d\n",__FUNCTION__, data[1], data[2], data[3]);
+#endif /* CONFIG_REALTEK_VENUS_USB */	//cfyeh+ 2005/11/07
+#endif
+
 	input_sync(dev);
 resubmit:
 	status = usb_submit_urb (urb, SLAB_ATOMIC);
@@ -203,6 +220,7 @@ static int usb_mouse_probe(struct usb_interface * intf, const struct usb_device_
 	printk(KERN_INFO "input: %s on %s\n", mouse->name, path);
 
 	usb_set_intfdata(intf, mouse);
+	kobject_hotplug(&dev->dev.kobj, KOBJ_USBMICE_UP);
 	return 0;
 }
 
@@ -212,6 +230,7 @@ static void usb_mouse_disconnect(struct usb_interface *intf)
 	
 	usb_set_intfdata(intf, NULL);
 	if (mouse) {
+		kobject_hotplug(&mouse->usbdev->dev.kobj, KOBJ_USBMICE_DOWN);
 		usb_kill_urb(mouse->irq);
 		input_unregister_device(&mouse->dev);
 		usb_free_urb(mouse->irq);

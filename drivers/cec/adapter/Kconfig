@@ -1,0 +1,51 @@
+# drivers/Kconfig
+
+comment"CEC Adapters"
+	depends on CEC
+
+config MARS_CEC
+	bool "NEPTUNE/MARS/JUPITER CEC Controller"
+	depends on CEC && REALTEK_VENUS
+	default n
+	help
+	  If you want to use CEC on Neptune/Mars board, say Y.
+
+config MULTI_PORT_MARS_CEC
+	bool "Multi Port CEC Support"
+	depends on CEC && REALTEK_VENUS
+	select GCEC_RX_EN
+	default n
+	help
+	  If you to use multi port CEC on Neptune/Mars/Jupiter board, say Y.
+
+config GCEC_FIXUP_EN
+	bool "GCEC Fixup"
+	depends on MARS_CEC && !MULTI_PORT_MARS_CEC
+	select KERNEL_GPIO_CONTROL
+	default n
+	help
+	  If you want to use CEC on Neptune/Mars/Jupiter board, say Y.
+	  
+config GCEC_RX_EN
+	bool "GCEC RX"
+	depends on MARS_CEC && MULTI_PORT_MARS_CEC
+	select KERNEL_GPIO_CONTROL
+	default n
+	help
+	  If you want to use CEC on Neptune/Mars/Jupiter board, say Y.	  
+	  
+config DEFAULT_GCEC_ISO_GPIO
+	bool "USE ISO GPIO"
+	depends on GCEC_FIXUP_EN || GCEC_RX_EN
+	default n
+	help
+	  select use ISO GPIO for GCEC FIXUP
+	  	  
+config DEFAULT_GCEC_GPIO
+	int "Default GCEC GPIO Number (255 : determined by boot parameter)"
+	depends on GCEC_FIXUP_EN || GCEC_RX_EN
+	default "255"
+	help
+	  GCEC needs to use a free GPIO for CEC Fixup. 
+	  You can change it via specify GCEC_GPIO=? in 
+	  system_parameter_x boot parameter

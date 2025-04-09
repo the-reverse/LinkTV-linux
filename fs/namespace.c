@@ -228,6 +228,7 @@ static int show_vfsmnt(struct seq_file *m, void *v)
 		{ MS_MANDLOCK, ",mand" },
 		{ MS_NOATIME, ",noatime" },
 		{ MS_NODIRATIME, ",nodiratime" },
+		{ MS_RECOVERY, ",recovery" },
 		{ 0, NULL }
 	};
 	static struct proc_fs_info mnt_info[] = {
@@ -1344,6 +1345,9 @@ asmlinkage long sys_pivot_root(const char __user *new_root, const char __user *p
 		goto out3;
 	detach_mnt(new_nd.mnt, &parent_nd);
 	detach_mnt(user_nd.mnt, &root_parent);
+	if (user_nd.mnt == current->namespace->root) { 
+		root_parent.mnt = new_nd.mnt; /* avoid creating a mount loop */ 
+	}
 	attach_mnt(user_nd.mnt, &old_nd);     /* mount old root on put_old */
 	attach_mnt(new_nd.mnt, &root_parent); /* mount new_root on / */
 	spin_unlock(&vfsmount_lock);

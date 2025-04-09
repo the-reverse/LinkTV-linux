@@ -14,6 +14,7 @@
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
 #include "mmc_queue.h"
+#include "mmc_debug.h"
 
 #define MMC_QUEUE_EXIT		(1 << 0)
 #define MMC_QUEUE_SUSPENDED	(1 << 1)
@@ -25,6 +26,7 @@
  */
 static int mmc_prep_request(struct request_queue *q, struct request *req)
 {
+
 	struct mmc_queue *mq = q->queuedata;
 	int ret = BLKPREP_KILL;
 
@@ -57,10 +59,10 @@ static int mmc_prep_request(struct request_queue *q, struct request *req)
 
 static int mmc_queue_thread(void *d)
 {
+
 	struct mmc_queue *mq = d;
 	struct request_queue *q = mq->queue;
 	DECLARE_WAITQUEUE(wait, current);
-
 	/*
 	 * Set iothread to ensure that we aren't put to sleep by
 	 * the process freezing.  We handle suspension ourselves.
@@ -78,8 +80,10 @@ static int mmc_queue_thread(void *d)
 
 		spin_lock_irq(q->queue_lock);
 		set_current_state(TASK_INTERRUPTIBLE);
-		if (!blk_queue_plugged(q))
-			mq->req = req = elv_next_request(q);
+                if (!blk_queue_plugged(q)){
+                    req = elv_next_request(q);
+                }
+                mq->req = req;
 		spin_unlock_irq(q->queue_lock);
 
 		if (!req) {
@@ -91,8 +95,7 @@ static int mmc_queue_thread(void *d)
 			continue;
 		}
 		set_current_state(TASK_RUNNING);
-
-		mq->issue_fn(mq, req);
+		mq->issue_fn(mq, req);  //mmc_blk_issue_rq;
 	} while (1);
 	remove_wait_queue(&mq->thread_wq, &wait);
 	up(&mq->thread_sem);
@@ -109,6 +112,7 @@ static int mmc_queue_thread(void *d)
  */
 static void mmc_request(request_queue_t *q)
 {
+
 	struct mmc_queue *mq = q->queuedata;
 
 	if (!mq->req)
@@ -125,6 +129,7 @@ static void mmc_request(request_queue_t *q)
  */
 int mmc_init_queue(struct mmc_queue *mq, struct mmc_card *card, spinlock_t *lock)
 {
+
 	struct mmc_host *host = card->host;
 	u64 limit = BLK_BOUNCE_HIGH;
 	int ret;
@@ -134,8 +139,10 @@ int mmc_init_queue(struct mmc_queue *mq, struct mmc_card *card, spinlock_t *lock
 
 	mq->card = card;
 	mq->queue = blk_init_queue(mmc_request, lock);
-	if (!mq->queue)
+	if (!mq->queue){
+		printk("blk_init_queue() fails\n");
 		return -ENOMEM;
+	}
 
 	blk_queue_prep_rq(mq->queue, mmc_prep_request);
 	blk_queue_bounce_limit(mq->queue, limit);
@@ -147,9 +154,9 @@ int mmc_init_queue(struct mmc_queue *mq, struct mmc_card *card, spinlock_t *lock
 	mq->queue->queuedata = mq;
 	mq->req = NULL;
 
-	mq->sg = kmalloc(sizeof(struct scatterlist) * host->max_phys_segs,
-			 GFP_KERNEL);
+	mq->sg = kmalloc(sizeof(struct scatterlist) * host->max_phys_segs, GFP_KERNEL);
 	if (!mq->sg) {
+		printk("Allocating mq->sg fails\n");
 		ret = -ENOMEM;
 		goto cleanup;
 	}
@@ -178,6 +185,7 @@ EXPORT_SYMBOL(mmc_init_queue);
 
 void mmc_cleanup_queue(struct mmc_queue *mq)
 {
+
 	mq->flags |= MMC_QUEUE_EXIT;
 	wake_up(&mq->thread_wq);
 	wait_for_completion(&mq->thread_complete);
@@ -185,7 +193,7 @@ void mmc_cleanup_queue(struct mmc_queue *mq)
 	kfree(mq->sg);
 	mq->sg = NULL;
 
-	blk_cleanup_queue(mq->queue);
+	//blk_cleanup_queue(mq->queue);
 
 	mq->card = NULL;
 }
@@ -201,6 +209,7 @@ EXPORT_SYMBOL(mmc_cleanup_queue);
  */
 void mmc_queue_suspend(struct mmc_queue *mq)
 {
+
 	request_queue_t *q = mq->queue;
 	unsigned long flags;
 
@@ -222,14 +231,13 @@ EXPORT_SYMBOL(mmc_queue_suspend);
  */
 void mmc_queue_resume(struct mmc_queue *mq)
 {
+
 	request_queue_t *q = mq->queue;
 	unsigned long flags;
-
 	if (mq->flags & MMC_QUEUE_SUSPENDED) {
 		mq->flags &= ~MMC_QUEUE_SUSPENDED;
 
 		up(&mq->thread_sem);
-
 		spin_lock_irqsave(q->queue_lock, flags);
 		blk_start_queue(q);
 		spin_unlock_irqrestore(q->queue_lock, flags);

@@ -58,6 +58,7 @@
 #include <linux/file.h>
 #include <linux/workqueue.h>
 #include <linux/random.h>
+#include <asm/unaligned.h>
 
 #include <net/sock.h>
 #include <net/checksum.h>
@@ -755,7 +756,8 @@ udp_data_ready(struct sock *sk, int len)
 	struct rpc_rqst *rovr;
 	struct sk_buff	*skb;
 	int err, repsize, copied;
-	u32 _xid, *xp;
+	u32 _xid;
+	struct __una_u32 *xp;
 
 	read_lock(&sk->sk_callback_lock);
 	dprintk("RPC:      udp_data_ready...\n");
@@ -786,7 +788,7 @@ udp_data_ready(struct sock *sk, int len)
 
 	/* Look up and lock the request corresponding to the given XID */
 	spin_lock(&xprt->sock_lock);
-	rovr = xprt_lookup_rqst(xprt, *xp);
+	rovr = xprt_lookup_rqst(xprt, xp->x);
 	if (!rovr)
 		goto out_unlock;
 	task = rovr->rq_task;

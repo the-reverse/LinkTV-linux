@@ -91,6 +91,12 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 	if (field->flags & HID_MAIN_ITEM_CONSTANT)
 		goto ignore;
 
+// cyhuang (2011/05/16) : Add for realtek keymap (MCE or keyboard media key support)
+#if defined(CONFIG_REALTEK_USE_RTD_KEYMAP)			
+	if (Rtd_Input_Mapping(device,hidinput,field,usage,&bit,&max) == 1)	
+	    goto input_mapped;
+#endif	    
+	    
 	switch (usage->hid & HID_USAGE_PAGE) {
 
 		case HID_UP_UNDEFINED:
@@ -340,6 +346,11 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 			break;
 	}
 
+// cyhuang (2011/05/16) : Add for realtek keymap (MCE or keyboard media key support)
+#if defined(CONFIG_REALTEK_USE_RTD_KEYMAP)	
+input_mapped :
+#endif
+    
 	set_bit(usage->type, input->evbit);
 
 	while (usage->code <= max && test_and_set_bit(usage->code, bit))
@@ -404,6 +415,8 @@ void hidinput_hid_event(struct hid_device *hid, struct hid_field *field, struct 
 		return;
 
 	input_regs(input, regs);
+	
+	// printk("%s : usage->hid = 0x%x\n",__func__,usage->hid);
 
 	if (!usage->type)
 		return;

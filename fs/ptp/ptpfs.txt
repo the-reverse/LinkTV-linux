@@ -1,0 +1,55 @@
+http://www.dankulp.com/ptpfs/
+
+PTP File System for Linux
+
+Background: 
+Most USB based digital camera now adays operate using one of two protocols to talk to the compter. Some use the USB Mass Storage protocol. In general, these are the best supported. When you plug them in, the camera looks just like any other block device and can be treated like a hard drive formatted as fat (or vfat). The othe protocol is the "Picture Transfer Protocol. " This protocol was developed by the camera manufacturers to allow enhanced communication between the camera and the computer. For example, to get the thumbnail of a picture, with PTP, there is a command to do that and the camera just needs to transfer a much smaller amount of data. With Mass Storage, the software needs to get the entire picture and it then generates the thumbnail. Other capabilities of PTP include marking pictures for email, printing, albums, etc... 
+
+The problem: 
+PTP is only supported in Linux via a user space library called libptp and can be found at http://sourceforge.net/projects/libptp. The user space library works quite well and has been incorporated into several other projects like gphoto (http://sourceforge.net/projects/gphoto/), gtkam, etc... For some of us "old school" unix users that like to use the command line, this isn't ideal. 
+
+The solution:
+A PTP file system for Linux. Basically, create a file system for Linux that uses the PTP protocol to communicate with the camera. The camera can be "mounted" via a normal mount command (and thus automounted with your favorite automounter) and all the basic filesystem commands, like cp, mkdir, rm, rmdir, etc... should work. 
+Linked below is version 0.00000001 of my ptpfs driver. At this point, it is VERY VERY rough, use at your own risk. Filesystems run in KERNEL space, so if something goes wrong, you could really be screwed. I've only tested with the RedHat 2.4.20-18 kernel and with a Kodak DX6440 camera. That said, at this point, I can mount the camera, copy files (any files, not just pictures) to/from the camera, make and remove directories, and delete pictures. I can also use konqueror to browse into the mounted directory and it will show all the previews and such, allow drag/drop of files, etc... 
+
+Download 
+
+Known issues:
+When you unmount, a kernel message will say something to the affect of Busy Inodes, Self Destructing. Ignore that for now. I have no idea what that's from. Things seem to work OK before and after so I've been ignoring it. If someone can help out, that would be great. 
+Right now, it just mounts the first camera that is plugged in. 
+Right now, the UID and GID's it uses is the UID and GID of whoever first asked for the inode. There are mount options for uid and gid that are saved, they're just not used yet. 
+I have NO idea how to handle the interupts that are generated if something goes wrong. I'm doing this without any documentation about the PTP protocol so I really don't know a lot about the raw details. 
+
+Install:
+The install at this point is a bit bizzare. I'm a Java programmer by trade and this is my first attempt at Linux kernel hacking. Thus, I don't know anything about automake, etc... If someone would like to help out there, that would be great. Anyway, go to your /usr/src/linux/fs directory and type "tar -xzvf /path/to/ptpfs.tar.gz". This should create a ptpfs subdirectory. Then go to /usr/src/linux and type "make modules SUBDIRS=fs/ptpfs". That should create a ptpfs.o modules that can be insmodded. 
+
+Usage:
+To mount your camera, plug it in and turn it on. Then type "mount -t ptpfs none /mnt/camera". If you cd to the dir, you should see a sub directory for each "storage unit" in the camera. For example, with the DX6440 with a SD card installed, I see: 
+dkulp@dilbert ptpfs $ ls -l /mnt/camera
+total 0
+drwxrwxr-x    1 dkulp    dkulp            0 Jan 15 21:07 InternalMemory
+drwxrwxr-x    1 dkulp    dkulp            0 Jan 15 21:07 MemoryCard
+dkulp@dilbert ptpfs $ ls -l /mnt/camera
+total 0
+drwxrwxr-x    1 dkulp    dkulp            0 Jan 15 21:07 InternalMemory
+drwxrwxr-x    1 dkulp    dkulp            0 Jan 15 21:07 MemoryCard
+dkulp@dilbert ptpfs $ ls -l /mnt/camera/MemoryCard/
+total 0
+drwxrwxr-x    1 dkulp    dkulp            0 Jan 15 21:11 DCIM
+dkulp@dilbert ptpfs $ ls -l /mnt/camera/MemoryCard/DCIM/
+total 0
+drwxrwxr-x    1 dkulp    dkulp            0 Jan 15 21:11 100K6440
+dkulp@dilbert ptpfs $ ls -l /mnt/camera/MemoryCard/DCIM/
+total 0
+drwxrwxr-x    1 dkulp    dkulp            0 Jan 15 21:11 100K6440
+dkulp@dilbert ptpfs $ ls -l /mnt/camera/MemoryCard/DCIM/100K6440/
+total 0
+-rwxrwxr-x    1 dkulp    dkulp      1092114 Jan 13 17:19 100_0350.JPG
+-rwxrwxr-x    1 dkulp    dkulp       636643 Jan 13 17:19 100_0351.JPG
+    
+License: 
+This code is completely based on code found in the libptp library linked above and the other filesystems found in the linux kernel source. Thus, all of this code is based on GPLed software and thus must also be GPLed. 
+Why?
+My parents got me and my wife the Kodak DX6440 camera for christmas. After discovering it didn't "mount" via USB sotrage, I almost returned it, but we liked the camera so I decided to try and write a driver for it. It's turned a gift that has kept me entertained longer than any other gift I've gotten in a very long time. :) 
+Contact:
+You can email me with questions/comments a dan @ kulp.com 

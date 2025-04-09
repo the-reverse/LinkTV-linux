@@ -146,7 +146,7 @@ out:
 		printk(KERN_WARNING
 		       "Skipping PCI bus scan due to resource conflict\n");
 	}
-
+	
 	if (!pci_probe_only)
 		pci_assign_unassigned_resources();
 	pci_fixup_irqs(common_swizzle, pcibios_map_irq);

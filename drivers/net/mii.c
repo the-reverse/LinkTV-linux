@@ -270,7 +270,9 @@ unsigned int mii_check_media (struct mii_if_info *mii,
 	if (!new_carrier) {
 		netif_carrier_off(mii->dev);
 		if (ok_to_print)
-			printk(KERN_INFO "%s: link down\n", mii->dev->name);
+			printk(KERN_INFO "hotplug %s: link down\n", mii->dev->name);
+	
+		kobject_hotplug(&mii->dev->class_dev.kobj, KOBJ_LINKDOWN);
 		return 0; /* duplex did not change */
 	}
 
@@ -286,6 +288,36 @@ unsigned int mii_check_media (struct mii_if_info *mii,
 		advertise = mii->mdio_read(mii->dev, mii->phy_id, MII_ADVERTISE);
 		mii->advertising = advertise;
 	}
+
+#ifdef CONFIG_JUPITER_ETH 
+	if (!strncmp(mii->dev->name, "eth0", IFNAMSIZ)) {
+		struct ethtool_stats stats;
+	        struct ethtool_ops *ops = mii->dev->ethtool_ops;
+		u64 *data;
+		if (!ops->get_ethtool_stats || !ops->get_stats_count)
+			return 0;
+	        stats.n_stats = ops->get_stats_count(mii->dev);
+	        data = kmalloc(stats.n_stats * sizeof(u64), GFP_USER);
+                if (!data)
+   	        	return 0;
+		ops->get_ethtool_stats(mii->dev, &stats, data);
+		
+		duplex = data[15] & 0x40; 	
+		
+		if (ok_to_print)
+		printk(KERN_INFO "hotplug %s: link up, %sMbps, %s-duplex \n",
+		       mii->dev->name,
+		       data[14] & 0x10 ? "1000" :
+		       data[14] & 0x08 ? "10" : "100",
+		       duplex ? "full" : "half"
+		       );
+
+		kobject_hotplug(&mii->dev->class_dev.kobj, KOBJ_LINKUP);
+		kfree(data);
+
+	}
+#else
+
 	lpa = mii->mdio_read(mii->dev, mii->phy_id, MII_LPA);
 	if (mii->supports_gmii)
 		lpa2 = mii->mdio_read(mii->dev, mii->phy_id, MII_STAT1000);
@@ -297,12 +329,15 @@ unsigned int mii_check_media (struct mii_if_info *mii,
 		duplex = 1;
 
 	if (ok_to_print)
-		printk(KERN_INFO "%s: link up, %sMbps, %s-duplex, lpa 0x%04X\n",
+		printk(KERN_INFO "hotplug %s: link up, %sMbps, %s-duplex, lpa 0x%04X\n",
 		       mii->dev->name,
 		       lpa2 & (LPA_1000FULL | LPA_1000HALF) ? "1000" :
 		       media & (ADVERTISE_100FULL | ADVERTISE_100HALF) ? "100" : "10",
 		       duplex ? "full" : "half",
 		       lpa);
+			
+        kobject_hotplug(&mii->dev->class_dev.kobj, KOBJ_LINKUP);
+#endif
 
 	if ((init_media) || (mii->full_duplex != duplex)) {
 		mii->full_duplex = duplex;

@@ -77,10 +77,15 @@ parse() {
 			;;
 		"nod")
 			local dev_type=
-			local maj=$(LC_ALL=C ls -l "${location}" | \
-					gawk '{sub(/,/, "", $5); print $5}')
-			local min=$(LC_ALL=C ls -l "${location}" | \
-					gawk '{print $6}')
+##cyhuang (2010/1/14) : Patch for group name with space.
+#			local maj=$(LC_ALL=C ls -l "${location}" | \
+#					gawk '{sub(/,/, "", $5); print $5}')
+#			local min=$(LC_ALL=C ls -l "${location}" | \
+#					gawk '{print $6}')
+           local maj=$(LC_ALL=C ls -lo "${location}" | \
+                   gawk '{sub(/,/, "", $4); print $4}')
+           local min=$(LC_ALL=C ls -lo "${location}" | \
+                   gawk '{print $5}')
 
 			if [ -b "${location}" ]; then
 				dev_type="b"
@@ -90,8 +95,11 @@ parse() {
 			str="${ftype} ${name} ${str} ${dev_type} ${maj} ${min}"
 			;;
 		"slink")
-			local target=$(LC_ALL=C ls -l "${location}" | \
-					gawk '{print $11}')
+#cyhuang (2010/1/14) : Patch for group name with space.
+#			local target=$(LC_ALL=C ls -l "${location}" | \
+#					gawk '{print $11}')
+           local target=$(LC_ALL=C ls -lo "${location}" | \
+                   gawk '{print $10}')
 			str="${ftype} ${name} ${target} ${str}"
 			;;
 		*)

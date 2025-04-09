@@ -1,0 +1,60 @@
+#!/bin/bash
+
+intf_usb()
+{
+	sed -i '/CONFIG_USB_HCI = /c\CONFIG_USB_HCI = y' Makefile
+	sed -i '/CONFIG_PCI_HCI = /c\CONFIG_PCI_HCI = n' Makefile
+	sed -i '/CONFIG_SDIO_HCI = /c\CONFIG_SDIO_HCI = n' Makefile
+}
+intf_pcie()
+{
+	sed -i '/CONFIG_USB_HCI = /c\CONFIG_USB_HCI = n' Makefile
+	sed -i '/CONFIG_PCI_HCI = /c\CONFIG_PCI_HCI = y' Makefile
+	sed -i '/CONFIG_SDIO_HCI = /c\CONFIG_SDIO_HCI = n' Makefile
+}
+intf_sdio()
+{
+	sed -i '/CONFIG_USB_HCI = /c\CONFIG_USB_HCI = n' Makefile
+	sed -i '/CONFIG_PCI_HCI = /c\CONFIG_PCI_HCI = n' Makefile
+	sed -i '/CONFIG_SDIO_HCI = /c\CONFIG_SDIO_HCI = y' Makefile
+}
+
+nic_8192c()
+{
+	sed -i '/CONFIG_RTL8192C = /c\CONFIG_RTL8192C = y' Makefile
+	sed -i '/CONFIG_RTL8192D = /c\CONFIG_RTL8192D = n' Makefile
+}
+nic_8192d()
+{
+	sed -i '/CONFIG_RTL8192C = /c\CONFIG_RTL8192C = n' Makefile
+	sed -i '/CONFIG_RTL8192D = /c\CONFIG_RTL8192D = y' Makefile
+}
+
+if [ $# -eq 1 ]; then
+	card=$1
+	echo "You have selected $card"
+else
+	# Select NIC type
+	echo "Please select card type(1/2/3):"
+	select card in RTL8192cu RTL8192ce RTL8192du;
+	do
+		echo "You have selected $card"
+		break
+	done
+fi
+
+# Make
+case "$card" in
+	[Rr][Tt][Ll][8][1][9][2][Cc][Uu])
+	nic_8192c;
+	intf_usb;;
+	[Rr][Tt][Ll][8][1][9][2][Cc][Ee])
+	nic_8192c;
+	intf_pcie;;
+	[Rr][Tt][Ll][8][1][9][2][Dd][Uu])
+	nic_8192d;
+	intf_usb;;
+	*)
+	echo "Unknown NIC type"
+	;;
+esac

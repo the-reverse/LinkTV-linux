@@ -1,0 +1,1 @@
+#define CONFIG_MMC_RTKSD_MODULE 1

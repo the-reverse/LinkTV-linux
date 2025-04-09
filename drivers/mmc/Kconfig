@@ -60,4 +60,12 @@ config MMC_WBSD
 
 	  If unsure, say N.
 
+config MMC_RTKSD
+        tristate "Realtek MMC/SD Host Driver"
+        depends on MMC && MMC_BLOCK
+        help
+          This selects Realtek MMC/SD card reader.
+
+          If unsure, say N.
+
 endmenu

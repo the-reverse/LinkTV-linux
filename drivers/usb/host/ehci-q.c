@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001-2002 by David Brownell
+ * Copyright (C) 2001-2004 by David Brownell
  * 
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -40,6 +40,75 @@
 
 /*-------------------------------------------------------------------------*/
 
+#ifdef USB_EHCI_DEBUG_QH_QTD
+static void ehci_debug_qh(struct ehci_qh *qh)
+{
+	printk("====================================\n");
+	printk(" qh\t\t\t = %p\n", qh);
+	printk(" qh->hw_next\t\t = %p\n", qh->hw_next);
+	printk(" qh->hw_info1\t\t = %p\n", qh->hw_info1);
+	printk(" qh->hw_info2\t\t = %p\n", qh->hw_info2);
+	printk(" qh->hw_current\t\t = %p\n", qh->hw_current);
+	printk(" qh->hw_qtd_next\t = %p\n", qh->hw_qtd_next);
+	printk(" qh->hw_alt_next\t = %p\n", qh->hw_alt_next);
+	printk(" qh->hw_token\t\t = %p\n", qh->hw_token);
+	printk(" qh->hw_buf[0]\t\t = %p\n", qh->hw_buf[0]);
+	printk(" qh->hw_buf[1]\t\t = %p\n", qh->hw_buf[1]);
+	printk(" qh->hw_buf[2]\t\t = %p\n", qh->hw_buf[2]);
+	printk(" qh->hw_buf[3]\t\t = %p\n", qh->hw_buf[3]);
+	printk(" qh->hw_buf[4]\t\t = %p\n", qh->hw_buf[4]);
+	printk(" qh->hw_buf_hi[0]\t = %p\n", qh->hw_buf_hi[0]);
+	printk(" qh->hw_buf_hi[1]\t = %p\n", qh->hw_buf_hi[1]);
+	printk(" qh->hw_buf_hi[2]\t = %p\n", qh->hw_buf_hi[2]);
+	printk(" qh->hw_buf_hi[3]\t = %p\n", qh->hw_buf_hi[3]);
+	printk(" qh->hw_buf_hi[4]\t = %p\n", qh->hw_buf_hi[4]);
+	printk(" qh->qh_dma\t\t = %p\n", qh->qh_dma);
+	printk(" qh->qh_next\t\t = %p\n", qh->qh_next);
+	printk(" qh->qtd_list\t\t = %p\n", qh->qtd_list);
+	printk(" qh->dummy\t\t = %p\n", qh->dummy);
+	printk(" qh->reclaim\t\t = %p\n", qh->reclaim);
+	printk(" qh->ehci\t\t = %p\n", qh->ehci);
+	printk(" qh->kref\t\t = %p\n", qh->kref);
+	printk(" qh->stamp\t\t = %p\n", qh->stamp);
+	printk(" qh->qh_state\t\t = %p\n", qh->qh_state);
+	printk(" qh->usecs\t\t = %p\n", qh->usecs);
+	printk(" qh->gap_uf\t\t = %p\n", qh->gap_uf);
+	printk(" qh->c_usecs\t\t = %p\n", qh->c_usecs);
+	printk(" qh->period\t\t = %p\n", qh->period);
+	printk(" qh->start\t\t = %p\n", qh->start);
+	printk(" qh->dev\t\t = %p\n", qh->dev);
+	printk("====================================\n\n");
+
+	return;
+}
+
+static void ehci_debug_qtd(struct ehci_qtd *qtd)
+{
+	printk("====================================\n");
+	printk(" qtd\t\t\t = %p\n", qtd);
+	printk(" qtd->hw_next\t\t = %p\n", qtd->hw_next);
+	printk(" qtd->hw_alt_next\t = %p\n", qtd->hw_alt_next);
+	printk(" qtd->hw_token\t\t = %p\n", qtd->hw_token);
+	printk(" qtd->hw_buf[0]\t\t = %p\n", qtd->hw_buf[0]);
+	printk(" qtd->hw_buf[1]\t\t = %p\n", qtd->hw_buf[1]);
+	printk(" qtd->hw_buf[2]\t\t = %p\n", qtd->hw_buf[2]);
+	printk(" qtd->hw_buf[3]\t\t = %p\n", qtd->hw_buf[3]);
+	printk(" qtd->hw_buf[4]\t\t = %p\n", qtd->hw_buf[4]);
+	printk(" qtd->hw_buf_hi[0]\t = %p\n", qtd->hw_buf_hi[0]);
+	printk(" qtd->hw_buf_hi[1]\t = %p\n", qtd->hw_buf_hi[1]);
+	printk(" qtd->hw_buf_hi[2]\t = %p\n", qtd->hw_buf_hi[2]);
+	printk(" qtd->hw_buf_hi[3]\t = %p\n", qtd->hw_buf_hi[3]);
+	printk(" qtd->hw_buf_hi[4]\t = %p\n", qtd->hw_buf_hi[4]);
+	printk(" qtd->qtd_dma\t\t = %p\n", qtd->qtd_dma);
+	printk(" qtd->qh_list\t\t = %p\n", qtd->qtd_list);
+	printk(" qtd->urb\t\t = %p\n", qtd->urb);
+	printk(" qtd->length\t\t = %p\n", qtd->length);
+	printk("====================================\n\n");
+
+	return;
+}
+#endif /* USB_EHCI_DEBUG_QH_QTD */
+
 /* fill a qtd, returning how much of the buffer we were able to queue up */
 
 static int
@@ -77,6 +146,19 @@ qtd_fill (struct ehci_qtd *qtd, dma_addr_t buf, size_t len,
 	}
 	qtd->hw_token = cpu_to_le32 ((count << 16) | token);
 	qtd->length = count;
+
+#ifdef USB_EHCI_CHECK_ALIGNMENT
+	if(is_venus_cpu() || is_neptune_cpu())
+	if ((unsigned int)qtd->hw_buf[0] & (USB_EHCI_CHECK_ALIGNMENT_SIZE - 1))
+	{
+		if(count > (int)(USB_EHCI_CHECK_ALIGNMENT_SIZE - ((unsigned int)qtd->hw_buf[0] & (USB_EHCI_CHECK_ALIGNMENT_SIZE - 1))))
+		{
+			// ehci qtd hw buffer cross 1k byte boundary
+			printk("#### [cfyeh] EHCI Cross 0x%x Bytes : qtd->hw_buf[0] = 0x%x, qtd->length = 0x%x\n", USB_EHCI_CHECK_ALIGNMENT_SIZE, qtd->hw_buf[0], count);
+			WARN_ON(1);
+		}
+	}
+#endif /* USB_EHCI_CHECK_ALIGNMENT */
 
 	return count;
 }
@@ -145,6 +227,8 @@ static void qtd_copy_status (
 	u32 token
 )
 {
+	int i, len, offset;
+	unsigned char * ptr;
 	/* count IN/OUT bytes, not SETUP (even short packets) */
 	if (likely (QTD_PID (token) != 2))
 		urb->actual_length += length - QTD_LENGTH (token);
@@ -179,6 +263,19 @@ static void qtd_copy_status (
 					usb_pipeendpoint (urb->pipe),
 					usb_pipein (urb->pipe) ? "in" : "out");
 				urb->status = -EPROTO;
+#if 0
+				printk("actual_length 0x%x transfer_buffer_length 0x%x\n", urb->actual_length, urb->transfer_buffer_length);
+				offset = ((urb->actual_length - 1) / 0x400)* 0x400;
+				printk("offset 0x%x\n", offset);
+				ptr = KSEG1ADDR(urb->transfer_dma);
+				for(i=offset; i < (urb->actual_length + 0x400); i++) {
+					if((i % 64) == 0)
+						printk("0x%.8x: ", i);
+					printk("%.2x ", ptr[i]);
+					if((i % 64) == 63)
+						printk("\n");
+				}
+#endif
 			}
 		/* CERR nonzero + no errors + halt --> stall */
 		} else if (QTD_CERR (token))
@@ -213,6 +310,8 @@ static void qtd_copy_status (
 	}
 }
 
+extern int bForEhciDebug;
+
 static void
 ehci_urb_done (struct ehci_hcd *ehci, struct urb *urb, struct pt_regs *regs)
 __releases(ehci->lock)
@@ -222,7 +321,7 @@ __acquires(ehci->lock)
 		struct ehci_qh	*qh = (struct ehci_qh *) urb->hcpriv;
 
 		/* S-mask in a QH means it's an interrupt urb */
-		if ((qh->hw_info2 & __constant_cpu_to_le32 (0x00ff)) != 0) {
+		if ((qh->hw_info2 & __constant_cpu_to_le32 (QH_SMASK)) != 0) {
 
 			/* ... update hc-wide periodic stats (for usbfs) */
 			ehci_to_hcd(ehci)->self.bandwidth_int_reqs--;
@@ -258,6 +357,15 @@ __acquires(ehci->lock)
 		usb_pipein (urb->pipe) ? "in" : "out",
 		urb->status,
 		urb->actual_length, urb->transfer_buffer_length);
+#else
+	if(bForEhciDebug)
+	ehci_force_dbg (ehci,
+		"%s %s urb %p ep%d%s status %d len %d/%d\n",
+		__FUNCTION__, urb->dev->devpath, urb,
+		usb_pipeendpoint (urb->pipe),
+		usb_pipein (urb->pipe) ? "in" : "out",
+		urb->status,
+		urb->actual_length, urb->transfer_buffer_length);
 #endif
 
 	/* complete() can reenter this HCD */
@@ -271,6 +379,47 @@ static void unlink_async (struct ehci_hcd *ehci, struct ehci_qh *qh);
 
 static void intr_deschedule (struct ehci_hcd *ehci, struct ehci_qh *qh);
 static int qh_schedule (struct ehci_hcd *ehci, struct ehci_qh *qh);
+
+
+#ifdef USB_MARS_EHCI_CONNECTION_STATE_POLLING
+static inline void ehci_connection_stat_polling(struct ehci_qtd	*_qtd)
+{
+	struct usb_device *dev;
+	struct urb	*urb;
+	int port = 0;
+			
+	if(!is_mars_cpu()) // for mars
+		return;
+	// VENUS_SB2_CHIP_INFO: bit[31,16]
+	// 0xa0 => A version
+	// 0xb0 => B version
+	if((inl(VENUS_SB2_CHIP_INFO) >> 16) == 0xa0)
+		return;
+
+	if (!_qtd)
+		return;
+	
+	urb = _qtd->urb;				
+	dev = urb->dev;
+	
+	if ((!urb) || (!dev))
+		return;
+						
+	port = dev->devpath[0] - '1';			
+	// printk("devpath = %s\n",dev->devpath);	
+	
+	if ((port > 2) || (port < 0)) {			
+		printk("%s [Error] : devpath = %s\n",__func__,dev->devpath);	
+		return;
+	}
+				
+	// printk("urb->status = 0x%x\n",urb->status);	
+	// printk("port = %d\n", port);					
+				
+	if (urb->status == 0)
+		ehci_port_jiffies[port] = jiffies;
+}
+#endif // #ifdef USB_MARS_EHCI_CONNECTION_STATE_POLLING
 
 /*
  * Process and free completed qtds for a qh, returning URBs to drivers.
@@ -318,6 +467,9 @@ qh_completions (struct ehci_hcd *ehci, struct ehci_qh *qh, struct pt_regs *regs)
 		if (last) {
 			if (likely (last->urb != urb)) {
 				ehci_urb_done (ehci, last->urb, regs);
+#ifdef USB_MARS_EHCI_CONNECTION_STATE_POLLING
+				ehci_connection_stat_polling(last);		
+#endif /* USB_MARS_EHCI_CONNECTION_STATE_POLLING */
 				count++;
 			}
 			ehci_qtd_free (ehci, last);
@@ -408,6 +560,9 @@ halt:
 	/* last urb's completion might still need calling */
 	if (likely (last != NULL)) {
 		ehci_urb_done (ehci, last->urb, regs);
+#ifdef USB_MARS_EHCI_CONNECTION_STATE_POLLING
+		ehci_connection_stat_polling(last);		
+#endif /* USB_MARS_EHCI_CONNECTION_STATE_POLLING */
 		count++;
 		ehci_qtd_free (ehci, last);
 	}
@@ -428,7 +583,8 @@ halt:
 			/* should be rare for periodic transfers,
 			 * except maybe high bandwidth ...
 			 */
-			if (qh->period) {
+			if ((__constant_cpu_to_le32 (QH_SMASK)
+					& qh->hw_info2) != 0) {
 				intr_deschedule (ehci, qh);
 				(void) qh_schedule (ehci, qh);
 			} else
@@ -657,8 +813,8 @@ qh_make (
 	 * For control/bulk requests, the HC or TT handles these.
 	 */
 	if (type == PIPE_INTERRUPT) {
-		qh->usecs = usb_calc_bus_time (USB_SPEED_HIGH, is_input, 0,
-				hb_mult (maxp) * max_packet (maxp));
+		qh->usecs = NS_TO_US (usb_calc_bus_time (USB_SPEED_HIGH, is_input, 0,
+				hb_mult (maxp) * max_packet (maxp)));
 		qh->start = NO_FRAME;
 
 		if (urb->dev->speed == USB_SPEED_HIGH) {
@@ -676,6 +832,9 @@ qh_make (
 				goto done;
 			}
 		} else {
+			struct usb_tt	*tt = urb->dev->tt;
+			int		think_time;
+
 			/* gap is f(FS/LS transfer times) */
 			qh->gap_uf = 1 + usb_calc_bus_time (urb->dev->speed,
 					is_input, 0, maxp) / (125 * 1000);
@@ -689,6 +848,10 @@ qh_make (
 				qh->c_usecs = HS_USECS (0);
 			}
 
+			think_time = tt ? tt->think_time : 0;
+			qh->tt_usecs = NS_TO_US (think_time +
+					usb_calc_bus_time (urb->dev->speed,
+					is_input, 0, max_packet (maxp)));
 			qh->period = urb->interval;
 		}
 	}
@@ -736,7 +899,7 @@ qh_make (
 			info2 |= (EHCI_TUNE_MULT_HS << 30);
 		} else if (type == PIPE_BULK) {
 			info1 |= (EHCI_TUNE_RL_HS << 28);
-			info1 |= 512 << 16;	/* usb2 fixed maxpacket */
+			info1 |= max_packet (maxp) << 16;
 			info2 |= (EHCI_TUNE_MULT_HS << 30);
 		} else {		/* PIPE_INTERRUPT */
 			info1 |= max_packet (maxp) << 16;
@@ -772,7 +935,9 @@ static void qh_link_async (struct ehci_hcd *ehci, struct ehci_qh *qh)
 
 	/* (re)start the async schedule? */
 	head = ehci->async;
+#ifndef DISABLE_EHCI_WATCHDOG
 	timer_action_done (ehci, TIMER_ASYNC_OFF);
+#endif /* ! DISABLE_EHCI_WATCHDOG */
 	if (!head->qh_next.qh) {
 		u32	cmd = readl (&ehci->regs->command);
 
@@ -904,6 +1069,7 @@ submit_async (
 	int			epnum;
 	unsigned long		flags;
 	struct ehci_qh		*qh = NULL;
+	int			rc = 0;
 
 	qtd = list_entry (qtd_list->next, struct ehci_qtd, qtd_list);
 	epnum = ep->desc.bEndpointAddress;
@@ -915,24 +1081,33 @@ submit_async (
 		epnum & 0x0f, (epnum & USB_DIR_IN) ? "in" : "out",
 		urb->transfer_buffer_length,
 		qtd, ep->hcpriv);
+#else
+	if(bForEhciDebug)
+	ehci_force_dbg (ehci,
+		"%s %s urb %p ep%d%s len %d, qtd %p [qh %p]\n",
+		__FUNCTION__, urb->dev->devpath, urb,
+		epnum & 0x0f, (epnum & USB_DIR_IN) ? "in" : "out",
+		urb->transfer_buffer_length,
+		qtd, ep->hcpriv);
 #endif
 
 	spin_lock_irqsave (&ehci->lock, flags);
 	qh = qh_append_tds (ehci, urb, qtd_list, epnum, &ep->hcpriv);
+	if (unlikely(qh == NULL)) {
+		rc = -ENOMEM;
+		goto done;
+	}
 
 	/* Control/bulk operations through TTs don't need scheduling,
 	 * the HC and TT handle it when the TT has a buffer ready.
 	 */
-	if (likely (qh != NULL)) {
-		if (likely (qh->qh_state == QH_STATE_IDLE))
-			qh_link_async (ehci, qh_get (qh));
-	}
+	if (likely (qh->qh_state == QH_STATE_IDLE))
+		qh_link_async (ehci, qh_get (qh));
+ done:
 	spin_unlock_irqrestore (&ehci->lock, flags);
-	if (unlikely (qh == NULL)) {
+	if (unlikely (qh == NULL))
 		qtd_list_free (ehci, urb, qtd_list);
-		return -ENOMEM;
-	}
-	return 0;
+	return rc;
 }
 
 /*-------------------------------------------------------------------------*/
@@ -944,7 +1119,9 @@ static void end_unlink_async (struct ehci_hcd *ehci, struct pt_regs *regs)
 	struct ehci_qh		*qh = ehci->reclaim;
 	struct ehci_qh		*next;
 
+#ifndef DISABLE_EHCI_WATCHDOG
 	timer_action_done (ehci, TIMER_IAA_WATCHDOG);
+#endif /* ! DISABLE_EHCI_WATCHDOG */
 
 	// qh->hw_next = cpu_to_le32 (qh->qh_dma);
 	qh->qh_state = QH_STATE_IDLE;
@@ -965,12 +1142,14 @@ static void end_unlink_async (struct ehci_hcd *ehci, struct pt_regs *regs)
 	else {
 		qh_put (qh);		// refcount from async list
 
+#ifndef DISABLE_EHCI_WATCHDOG
 		/* it's not free to turn the async schedule on/off; leave it
 		 * active but idle for a while once it empties.
 		 */
 		if (HC_IS_RUNNING (ehci_to_hcd(ehci)->state)
 				&& ehci->async->qh_next.qh == NULL)
 			timer_action (ehci, TIMER_ASYNC_OFF);
+#endif /* ! DISABLE_EHCI_WATCHDOG */
 	}
 
 	if (next) {
@@ -1004,7 +1183,9 @@ static void start_unlink_async (struct ehci_hcd *ehci, struct ehci_qh *qh)
 			wmb ();
 			// handshake later, if we need to
 		}
+#ifndef DISABLE_EHCI_WATCHDOG
 		timer_action_done (ehci, TIMER_ASYNC_OFF);
+#endif /* ! DISABLE_EHCI_WATCHDOG */
 		return;
 	} 
 
@@ -1031,7 +1212,9 @@ static void start_unlink_async (struct ehci_hcd *ehci, struct ehci_qh *qh)
 	cmd |= CMD_IAAD;
 	writel (cmd, &ehci->regs->command);
 	(void) readl (&ehci->regs->command);
+#ifndef DISABLE_EHCI_WATCHDOG
 	timer_action (ehci, TIMER_IAA_WATCHDOG);
+#endif /* ! DISABLE_EHCI_WATCHDOG */
 }
 
 /*-------------------------------------------------------------------------*/
@@ -1044,7 +1227,9 @@ scan_async (struct ehci_hcd *ehci, struct pt_regs *regs)
 
 	if (!++(ehci->stamp))
 		ehci->stamp++;
+#ifndef DISABLE_EHCI_WATCHDOG
 	timer_action_done (ehci, TIMER_ASYNC_SHRINK);
+#endif /* ! DISABLE_EHCI_WATCHDOG */
 rescan:
 	qh = ehci->async->qh_next.qh;
 	if (likely (qh != NULL)) {
@@ -1085,6 +1270,8 @@ rescan:
 			qh = qh->qh_next.qh;
 		} while (qh);
 	}
+#ifndef DISABLE_EHCI_WATCHDOG
 	if (action == TIMER_ASYNC_SHRINK)
 		timer_action (ehci, TIMER_ASYNC_SHRINK);
+#endif /* ! DISABLE_EHCI_WATCHDOG */
 }

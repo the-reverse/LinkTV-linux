@@ -48,6 +48,9 @@ struct loop_device {
 				 unsigned long arg); 
 
 	struct file *	lo_backing_file;
+#ifdef CONFIG_BLK_DEV_LOOP_DIRECT_IO
+	struct super_block *lo_backing_super;
+#endif
 	struct block_device *lo_device;
 	unsigned	lo_blocksize;
 	void		*key_data; 

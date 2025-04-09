@@ -7,6 +7,7 @@ ifeq ($(CONFIG_ISDN_PPP),y)
 endif
 
 obj-$(CONFIG_E1000) += e1000/
+obj-$(CONFIG_E1000_9301CT) += e1000_9301ct/
 obj-$(CONFIG_IBM_EMAC) += ibm_emac/
 obj-$(CONFIG_IXGB) += ixgb/
 obj-$(CONFIG_BONDING) += bonding/
@@ -53,7 +54,8 @@ obj-$(CONFIG_FEALNX) += fealnx.o
 obj-$(CONFIG_TIGON3) += tg3.o
 obj-$(CONFIG_BNX2) += bnx2.o
 obj-$(CONFIG_TC35815) += tc35815.o
-obj-$(CONFIG_SK98LIN) += sk98lin/
+obj-$(CONFIG_SKGE) += skge.o
+obj-$(CONFIG_SKY2) += sky2.o
 obj-$(CONFIG_SKFP) += skfp/
 obj-$(CONFIG_VIA_RHINE) += via-rhine.o
 obj-$(CONFIG_VIA_VELOCITY) += via-velocity.o
@@ -64,6 +66,9 @@ obj-$(CONFIG_ADAPTEC_STARFIRE) += starfire.o
 #
 
 obj-$(CONFIG_MII) += mii.o
+obj-$(CONFIG_8139CP_VENUS) += 8139cplus.o
+obj-$(CONFIG_JUPITER_ETH) += 8139cplus.o
+#obj-$(CONFIG_8139CP_MARS)  += 8139cplus.o
 
 obj-$(CONFIG_SUNDANCE) += sundance.o
 obj-$(CONFIG_HAMACHI) += hamachi.o
@@ -194,6 +199,7 @@ obj-$(CONFIG_WAN) += wan/
 obj-$(CONFIG_ARCNET) += arcnet/
 obj-$(CONFIG_NET_PCMCIA) += pcmcia/
 obj-$(CONFIG_NET_RADIO) += wireless/
+obj-$(CONFIG_NET_UWB) += uwb/
 obj-$(CONFIG_NET_TULIP) += tulip/
 obj-$(CONFIG_HAMRADIO) += hamradio/
 obj-$(CONFIG_IRDA) += irda/

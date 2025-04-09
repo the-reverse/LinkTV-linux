@@ -25,7 +25,11 @@
 #endif
 
 #include <linux/module.h>
+#ifndef CONFIG_REALTEK_VENUS_USB	//cfyeh+ 2005/11/07
 #include <linux/pci.h>
+#else
+#include <linux/device.h>
+#endif /* CONFIG_REALTEK_VENUS_USB */	//cfyeh- 2005/11/07
 #include <linux/dmapool.h>
 #include <linux/kernel.h>
 #include <linux/delay.h>
@@ -50,7 +54,24 @@
 #include <asm/irq.h>
 #include <asm/system.h>
 #include <asm/unaligned.h>
+#include <platform.h>	// for get board id
+#include <rl5829.h>
 
+#ifdef USB_MARS_EHCI_CONNECTION_STATE_POLLING
+extern int gUsbEhciHubSuspendResume[4];
+static struct usb_hcd *rtd_ehci_hcd = NULL;
+static void ehci_hub_thread_init(void);
+static void ehci_hub_thread_cleanup(void);
+
+static unsigned long volatile __jiffy_data ehci_port_jiffies[2] = {0,0};
+
+#endif /* USB_MARS_EHCI_CONNECTION_STATE_POLLING */
+
+#ifdef CONFIG_REALTEK_VENUS_USB	//cfyeh+ 2005/11/07
+#include <venus.h>
+#include <mars.h>
+#endif /* CONFIG_REALTEK_VENUS_USB */	//cfyeh- 2005/11/07
+//cfyeh+ 2005/10/05
 
 /*-------------------------------------------------------------------------*/
 
@@ -106,6 +127,7 @@ static const char	hcd_name [] = "ehci_hcd";
 
 #undef EHCI_VERBOSE_DEBUG
 #undef EHCI_URB_TRACE
+//#define DISABLE_EHCI_WATCHDOG
 
 #ifdef DEBUG
 #define EHCI_STATS
@@ -140,6 +162,149 @@ MODULE_PARM_DESC (park, "park setting; 1-3 back-to-back async packets");
 
 #include "ehci.h"
 #include "ehci-dbg.c"
+
+/*-------------------------------------------------------------------------*/
+//#if CONFIG_REALTEK_VENUS_USB_TEST_MODE
+//cfyeh+ : 2006/09/08
+//add for sysfs
+extern int gUsbGetDescriptor; // cfyeh+ : add for sysfs on usb
+static int gUsbGetDescriptor_flag = 0;
+#define max_packet_size(mMaxPacketSize) ((mMaxPacketSize) & 0x07ff)
+// gUsbGetDescriptor = 1 for the command phase
+// gUsbGetDescriptor = 2 for the data phase
+// gUsbGetDescriptor = 3 for the status phase
+static struct ehci_qtd *ehci_qtd_alloc (struct ehci_hcd *ehci, int flags);
+static int qtd_fill (struct ehci_qtd *qtd, dma_addr_t buf, size_t len, int token, int maxpacket);
+static void qtd_list_free (struct ehci_hcd *ehci, struct urb *urb, struct list_head	*qtd_list) ;
+static u32	backup_token;
+
+static struct list_head *
+hub_qh_urb_transaction (
+	struct ehci_hcd		*ehci,
+	struct urb		*urb,
+	struct list_head	*head,
+	int			flags
+)
+{
+	struct ehci_qtd		*qtd = NULL, *qtd_prev = NULL;
+	dma_addr_t		buf = 0;
+	int			len = 0, maxpacket = 0;
+	int			is_input = 0;
+
+	switch(gUsbGetDescriptor)
+	{
+	case 1:
+	printk("Get Descriptor : command phase\n");
+		/*
+		 * URBs map to sequences of QTDs:  one logical transaction
+		 */
+		qtd = ehci_qtd_alloc (ehci, flags);
+		if (unlikely (!qtd))
+			return NULL;
+		list_add_tail (&qtd->qtd_list, head);
+		qtd->urb = urb;
+	
+		backup_token = QTD_STS_ACTIVE;
+		backup_token |= (EHCI_TUNE_CERR << 10);
+		/* for split transactions, SplitXState initialized to zero */
+	
+		len = urb->transfer_buffer_length;
+		is_input = usb_pipein (urb->pipe);
+		if (usb_pipecontrol (urb->pipe)) {
+			/* SETUP pid */
+			qtd_fill (qtd, urb->setup_dma, sizeof (struct usb_ctrlrequest),
+				backup_token | (2 /* "setup" */ << 8) | QTD_IOC, 8);
+	
+			/* ... and always at least one more pid */
+			backup_token ^= QTD_TOGGLE;
+			qtd_prev = qtd;
+			qtd = ehci_qtd_alloc (ehci, flags);
+			if (unlikely (!qtd))
+				goto cleanup;
+			qtd->urb = urb;
+			qtd_prev->hw_next = EHCI_LIST_END;
+			qtd_prev->hw_alt_next = EHCI_LIST_END;
+		} 
+
+		break;
+	case 2:
+	printk("Get Descriptor : data phase\n");
+		/*
+		 * URBs map to sequences of QTDs:  one logical transaction
+		 */
+		qtd = ehci_qtd_alloc (ehci, flags);
+		if (unlikely (!qtd))
+			return NULL;
+		list_add_tail (&qtd->qtd_list, head);
+		qtd->urb = urb;
+
+		/*
+		 * data transfer stage:  buffer setup
+		 */
+		buf = urb->transfer_dma;
+		backup_token |= (1 /* "in" */ << 8);
+	
+		maxpacket = max_packet_size(usb_maxpacket(urb->dev, urb->pipe, !is_input));
+	
+		/*
+		 * buffer gets wrapped in one or more qtds;
+		 * last one may be "short" (including zero len)
+		 * and may serve as a control status ack
+		 */
+		qtd_fill (qtd, buf, 18, backup_token, maxpacket);
+		qtd->hw_next = EHCI_LIST_END;
+		qtd->hw_alt_next = EHCI_LIST_END;
+	
+		break;
+	case 3:
+	printk("Get Descriptor : status phase\n");
+		/*
+		 * control requests may need a terminating data "status" ack;
+		 * bulk ones may need a terminating short packet (zero length).
+		 */
+		//gUsbGetDescriptor = 0;
+		{
+			int	one_more = 0;
+	
+			if (usb_pipecontrol (urb->pipe)) {
+				one_more = 1;
+				backup_token ^= 0x0100;	/* "in" <--> "out"  */
+				backup_token |= QTD_TOGGLE;	/* force DATA1 */
+			} else if (usb_pipebulk (urb->pipe)
+					&& (urb->transfer_flags & URB_ZERO_PACKET)
+					&& !(urb->transfer_buffer_length % maxpacket)) {
+				one_more = 1;
+			}
+			if (one_more) {
+				//qtd_prev = qtd;
+				qtd = ehci_qtd_alloc (ehci, flags);
+				if (unlikely (!qtd))
+					goto cleanup;
+				qtd->urb = urb;
+				//qtd_prev->hw_next = QTD_NEXT (qtd->qtd_dma);
+				list_add_tail (&qtd->qtd_list, head);
+	
+				/* never any data in such packets */
+				qtd_fill (qtd, 0, 0, backup_token | QTD_IOC, 0);
+				qtd->hw_next = EHCI_LIST_END;
+				qtd->hw_alt_next = EHCI_LIST_END;
+			}
+		}
+		break;
+	default:
+		break;
+	}
+	/* by default, enable interrupt on urb completion */
+	if (likely (!(urb->transfer_flags & URB_NO_INTERRUPT)))
+		qtd->hw_token |= __constant_cpu_to_le32 (QTD_IOC);
+	return head;
+
+cleanup:
+	qtd_list_free (ehci, urb, head);
+	return NULL;
+}
+//cfyeh- : 2006/09/08
+//#endif /* CONFIG_REALTEK_VENUS_USB_TEST_MODE */
 
 /*-------------------------------------------------------------------------*/
 
@@ -216,6 +381,11 @@ static int ehci_reset (struct ehci_hcd *ehci)
 	ehci->next_statechange = jiffies;
 	retval = handshake (&ehci->regs->command, CMD_RESET, 0, 250 * 1000);
 
+	//INSNREH03
+	outl(0x00000001, VENUS_USB_EHCI_INSNREG03);
+	//in/out packet size
+	outl(0x01000040, VENUS_USB_EHCI_INSNREG01);
+
 	if (retval)
 		return retval;
 
@@ -268,6 +438,11 @@ static void ehci_work(struct ehci_hcd *ehci, struct pt_regs *regs);
 
 /*-------------------------------------------------------------------------*/
 
+#ifdef CONFIG_USB_EHCI_INT_ERROR_HACK_1071
+static int ehci_int_error_flag = 0;
+#endif // CONFIG_USB_EHCI_INT_ERROR_HACK_1071
+
+#ifndef DISABLE_EHCI_WATCHDOG
 static void ehci_watchdog (unsigned long param)
 {
 	struct ehci_hcd		*ehci = (struct ehci_hcd *) param;
@@ -294,10 +469,20 @@ static void ehci_watchdog (unsigned long param)
 	/* ehci could run by timer, without IRQs ... */
 	ehci_work (ehci, NULL);
 
+#ifdef CONFIG_USB_EHCI_INT_ERROR_HACK_1071
+	if(ehci_int_error_flag)
+	{
+		printk("#######[cfyeh-debug] %s(%d) enable ehci interrupt !!!\n", __func__, __LINE__);
+		outl(INTR_MASK, VENUS_USB_EHCI_USBINTR);
+		ehci_int_error_flag = 0;
+	}
+#endif // CONFIG_USB_EHCI_INT_ERROR_HACK_1071
+
 	spin_unlock_irqrestore (&ehci->lock, flags);
 }
+#endif /* ! DISABLE_EHCI_WATCHDOG */
 
-#ifdef	CONFIG_PCI
+#ifdef	_CONFIG_PCI	//cfyeh+ 2005/10/05
 
 /* EHCI 0.96 (and later) section 5.1 says how to kick BIOS/SMM/...
  * off the controller (maybe it can boot from highspeed USB disks).
@@ -369,7 +554,9 @@ static int ehci_hc_reset (struct usb_hcd *hcd)
 {
 	struct ehci_hcd		*ehci = hcd_to_ehci (hcd);
 	u32			temp;
+#ifdef	_CONFIG_PCI
 	unsigned		count = 256/4;
+#endif /* _CONFIG_PCI */
 
 	spin_lock_init (&ehci->lock);
 
@@ -381,7 +568,7 @@ static int ehci_hc_reset (struct usb_hcd *hcd)
 	/* cache this readonly data; minimize chip reads */
 	ehci->hcs_params = readl (&ehci->caps->hcs_params);
 
-#ifdef	CONFIG_PCI
+#ifdef	_CONFIG_PCI
 	if (hcd->self.controller->bus == &pci_bus_type) {
 		struct pci_dev	*pdev = to_pci_dev(hcd->self.controller);
 
@@ -452,7 +639,7 @@ static int ehci_hc_reset (struct usb_hcd *hcd)
 	if (ehci_is_TDI(ehci))
 		ehci_reset (ehci);
 #endif
-
+	
 	ehci_port_power (ehci, 0);
 
 	/* at least the Genesys GL880S needs fixup here */
@@ -465,7 +652,7 @@ static int ehci_hc_reset (struct usb_hcd *hcd)
 			HCS_N_PCC(ehci->hcs_params),
 			HCS_N_PORTS(ehci->hcs_params));
 
-#ifdef	CONFIG_PCI
+#ifdef	_CONFIG_PCI
 		if (hcd->self.controller->bus == &pci_bus_type) {
 			struct pci_dev	*pdev;
 
@@ -502,9 +689,13 @@ static int ehci_start (struct usb_hcd *hcd)
 	/* skip some things on restart paths */
 	first = (ehci->watchdog.data == 0);
 	if (first) {
+#ifndef DISABLE_EHCI_WATCHDOG
 		init_timer (&ehci->watchdog);
 		ehci->watchdog.function = ehci_watchdog;
 		ehci->watchdog.data = (unsigned long) ehci;
+#else
+		ehci->watchdog.data = (unsigned long) ehci;
+#endif /* ! DISABLE_EHCI_WATCHDOG */
 	}
 
 	/*
@@ -512,6 +703,8 @@ static int ehci_start (struct usb_hcd *hcd)
 	 * periodic_size can shrink by USBCMD update if hcc_params allows.
 	 */
 	ehci->periodic_size = DEFAULT_I_TDPS;
+	INIT_LIST_HEAD(&ehci->cached_itd_list);
+	INIT_LIST_HEAD(&ehci->cached_sitd_list);
 	if (first && (retval = ehci_mem_init (ehci, GFP_KERNEL)) < 0)
 		return retval;
 
@@ -535,7 +728,7 @@ static int ehci_start (struct usb_hcd *hcd)
 	}
 	writel (ehci->periodic_dma, &ehci->regs->frame_list);
 
-#ifdef	CONFIG_PCI
+#ifdef	_CONFIG_PCI
 	if (hcd->self.controller->bus == &pci_bus_type) {
 		struct pci_dev		*pdev;
 		u16			port_wake;
@@ -553,7 +746,7 @@ static int ehci_start (struct usb_hcd *hcd)
 		pci_set_mwi (pdev);
 	}
 #endif
-
+	
 	/*
 	 * dedicate a qh for the async ring head, since we couldn't unlink
 	 * a 'real' qh without stopping the async schedule [4.8].  use it
@@ -657,6 +850,13 @@ done2:
 	writel (FLAG_CF, &ehci->regs->configured_flag);
 	readl (&ehci->regs->command);	/* unblock posted write */
 
+//cfyeh+ check FRINDEX
+	temp = inl(VENUS_USB_EHCI_FRINDEX); // polling FRINDEX
+	mdelay(1);
+	if(temp == inl(VENUS_USB_EHCI_FRINDEX))  // wait until FRINDEX is going
+		printk("%s %d: EHCI FRINDEX regs error!!!!\n", __FUNCTION__, __LINE__);
+//cfyeh-
+
 	temp = HC_VERSION(readl (&ehci->caps->hc_capbase));
 	ehci_info (ehci,
 		"USB %x.%x %s, EHCI %x.%02x, driver %s\n",
@@ -687,6 +887,20 @@ done2:
 	if (first)
 		create_debug_files (ehci);
 
+#ifdef USB_MARS_EHCI_CONNECTION_STATE_POLLING		
+	if(is_mars_cpu())// for mars
+	{
+		// VENUS_SB2_CHIP_INFO: bit[31,16]
+		// 0xa0 => A version
+		// 0xb0 => B version
+		if((inl(VENUS_SB2_CHIP_INFO) >> 16) == 0xa0)
+		{
+			rtd_ehci_hcd = hcd;
+			ehci_hub_thread_init();
+		}
+	}
+#endif /* USB_MARS_EHCI_CONNECTION_STATE_POLLING */
+
 	return 0;
 }
 
@@ -701,8 +915,10 @@ static void ehci_stop (struct usb_hcd *hcd)
 	/* Turn off port power on all root hub ports. */
 	ehci_port_power (ehci, 0);
 
+#ifndef DISABLE_EHCI_WATCHDOG
 	/* no more interrupts ... */
 	del_timer_sync (&ehci->watchdog);
+#endif /* ! DISABLE_EHCI_WATCHDOG */
 
 	spin_lock_irq(&ehci->lock);
 	if (HC_IS_RUNNING (hcd->state))
@@ -734,6 +950,17 @@ static void ehci_stop (struct usb_hcd *hcd)
 #endif
 
 	dbg_status (ehci, "ehci_stop completed", readl (&ehci->regs->status));
+
+#ifdef USB_MARS_EHCI_CONNECTION_STATE_POLLING
+	if(is_mars_cpu())// for mars
+	{
+		// VENUS_SB2_CHIP_INFO: bit[31,16]
+		// 0xa0 => A version
+		// 0xb0 => B version
+		if((inl(VENUS_SB2_CHIP_INFO) >> 16) == 0xa0)
+			ehci_hub_thread_cleanup();
+	}
+#endif /* USB_MARS_EHCI_CONNECTION_STATE_POLLING */
 }
 
 static int ehci_get_frame (struct usb_hcd *hcd)
@@ -744,7 +971,7 @@ static int ehci_get_frame (struct usb_hcd *hcd)
 
 /*-------------------------------------------------------------------------*/
 
-#ifdef	CONFIG_PM
+#if     defined(CONFIG_PM) || defined(CONFIG_REALTEK_VENUS_USB) //cfyeh+ 2005/11/07
 
 /* suspend/resume, section 4.3 */
 
@@ -842,7 +1069,9 @@ static int ehci_resume (struct usb_hcd *hcd)
  */
 static void ehci_work (struct ehci_hcd *ehci, struct pt_regs *regs)
 {
+#ifndef DISABLE_EHCI_WATCHDOG
 	timer_action_done (ehci, TIMER_IO_WATCHDOG);
+#endif /* ! DISABLE_EHCI_WATCHDOG */
 	if (ehci->reclaim_ready)
 		end_unlink_async (ehci, regs);
 
@@ -858,6 +1087,7 @@ static void ehci_work (struct ehci_hcd *ehci, struct pt_regs *regs)
 		scan_periodic (ehci, regs);
 	ehci->scanning = 0;
 
+#ifndef DISABLE_EHCI_WATCHDOG
 	/* the IO watchdog guards against hardware or driver bugs that
 	 * misplace IRQs, and should let us run completely without IRQs.
 	 * such lossage has been observed on both VT6202 and VT8235. 
@@ -866,6 +1096,7 @@ static void ehci_work (struct ehci_hcd *ehci, struct pt_regs *regs)
 			(ehci->async->qh_next.ptr != NULL ||
 			 ehci->periodic_sched != 0))
 		timer_action (ehci, TIMER_IO_WATCHDOG);
+#endif /* ! DISABLE_EHCI_WATCHDOG */
 }
 
 /*-------------------------------------------------------------------------*/
@@ -903,6 +1134,14 @@ static irqreturn_t ehci_irq (struct usb_hcd *hcd, struct pt_regs *regs)
 #endif
 
 	/* INT, ERR, and IAA interrupt rates can be throttled */
+#ifdef CONFIG_USB_EHCI_INT_ERROR_HACK_1071
+	if (unlikely ((status & STS_ERR) != 0))
+	{
+		ehci_int_error_flag = 1;
+		printk("#######[cfyeh-debug] %s(%d) disable ehci interrupt !!!\n", __func__, __LINE__);
+		outl(0x0, VENUS_USB_EHCI_USBINTR);
+	}
+#endif // CONFIG_USB_EHCI_INT_ERROR_HACK_1071
 
 	/* normal [4.15.1.2] or error [4.15.1.1] completion */
 	if (likely ((status & (STS_INT|STS_ERR)) != 0)) {
@@ -966,6 +1205,15 @@ dead:
 		}
 	}
 
+#ifdef USB_MARS_IRQ_CHECK_DATA_READY
+	// cfyeh + : check MARS_USB_HOST_VERSION[11] = 0
+	if(is_mars_cpu())// for mars
+	{
+		while(inl(MARS_USB_HOST_VERSION) & (0x1 << 11));
+	}
+	// cfyeh - : check MARS_USB_HOST_VERSION[11] = 0
+#endif /* USB_MARS_IRQ_CHECK_DATA_READY */
+
 	if (bh)
 		ehci_work (ehci, regs);
 	spin_unlock (&ehci->lock);
@@ -997,6 +1245,27 @@ static int ehci_urb_enqueue (
 
 	INIT_LIST_HEAD (&qtd_list);
 
+//#if CONFIG_REALTEK_VENUS_USB_TEST_MODE
+	//cfyeh+ : 2006/09/08
+	//add for sysfs
+	if(gUsbGetDescriptor != 0)
+	{
+		gUsbGetDescriptor_flag = 1;
+		if(is_jupiter_cpu())
+			USBPHY_SetReg_Default_39(0);
+		if (!hub_qh_urb_transaction (ehci, urb, &qtd_list, mem_flags))
+			return -ENOMEM;
+		return submit_async (ehci, ep, urb, &qtd_list, mem_flags);
+	} else {
+		if(gUsbGetDescriptor_flag) {
+			gUsbGetDescriptor_flag = 0;
+			if(is_jupiter_cpu())
+				USBPHY_SetReg_Default_39(2);
+		}
+	}
+	//cfyeh- : 2006/09/08
+//#endif /* CONFIG_REALTEK_VENUS_USB_TEST_MODE */
+	
 	switch (usb_pipetype (urb->pipe)) {
 	// case PIPE_CONTROL:
 	// case PIPE_BULK:
@@ -1197,7 +1466,7 @@ static const struct hc_driver ehci_driver = {
 	 */
 	.reset =		ehci_hc_reset,
 	.start =		ehci_start,
-#ifdef	CONFIG_PM
+#if     defined(CONFIG_PM) || defined(CONFIG_REALTEK_VENUS_USB)	//cfyeh+ 2005/11/07
 	.suspend =		ehci_suspend,
 	.resume =		ehci_resume,
 #endif
@@ -1225,10 +1494,74 @@ static const struct hc_driver ehci_driver = {
 };
 
 /*-------------------------------------------------------------------------*/
+#ifdef CONFIG_REALTEK_VENUS_USB	//cfyeh+ 2005/11/07
+//cfyeh+ 2005/10/05
+static int ehci_hcd_drv_probe(struct device *dev)
+{
+	return usb_hcd_rbus_probe(&ehci_driver, to_platform_device(dev));
+}
+
+static int ehci_hcd_drv_remove(struct device *dev)
+{
+	struct platform_device	*pdev = to_platform_device(dev);
+	struct usb_hcd		*hcd = dev_get_drvdata(dev);
+	//struct ehci_hcd		*ehci = hcd_to_ehci (hcd);
+
+	usb_hcd_rbus_remove(hcd, pdev);
+	/*
+	if (ohci->transceiver) {
+		(void) otg_set_host(ohci->transceiver, 0);
+		put_device(ohci->transceiver->dev);
+	}
+	*/
+	dev_set_drvdata(dev, NULL);
+
+	return 0;
+}
+
+#ifdef	CONFIG_PM
+static int ehci_hcd_drv_suspend(struct device *dev, pm_message_t state, u32 level)
+{
+	struct platform_device	*pdev = to_platform_device(dev);
+	struct usb_hcd		*hcd = dev_get_drvdata(dev);
+	//struct ehci_hcd		*ehci = hcd_to_ehci (hcd);
+
+	return usb_hcd_rbus_suspend(hcd, pdev, state, level);
+}
+
+static int ehci_hcd_drv_resume(struct device *dev, u32 level)
+{
+	struct platform_device	*pdev = to_platform_device(dev);
+	struct usb_hcd		*hcd = dev_get_drvdata(dev);
+	//struct ehci_hcd		*ehci = hcd_to_ehci (hcd);
+
+	return usb_hcd_rbus_resume(hcd, pdev, level);
+}
+#endif
+
+static struct device_driver ehci_hcd_driver = {
+	.name =		(char *) hcd_name,
+	.bus	=	&platform_bus_type,
+	//.id_table =	pci_ids,
+
+	.probe =	ehci_hcd_drv_probe,
+	.remove =	ehci_hcd_drv_remove,
+
+#ifdef	CONFIG_PM
+	.suspend =	ehci_hcd_drv_suspend,
+	.resume =	ehci_hcd_drv_resume,
+#endif
+};
+
+static struct platform_device *ehci_hcd_devs;
+
+//cfyeh- 2005/10/05
+#endif /* CONFIG_REALTEK_VENUS_USB */	//cfyeh- 2005/11/07
+/*-------------------------------------------------------------------------*/
 
 /* EHCI 1.0 doesn't require PCI */
 
-#ifdef	CONFIG_PCI
+#ifdef	_CONFIG_PCI
 
 /* PCI driver selection metadata; PCI hotplugging uses this */
 static const struct pci_device_id pci_ids [] = { {
@@ -1265,6 +1598,10 @@ MODULE_LICENSE ("GPL");
 
 static int __init init (void) 
 {
+#ifdef CONFIG_REALTEK_VENUS_USB	//cfyeh+ 2005/11/07
+	int ret;	//cfyeh+ 2005/10/05
+#endif /* CONFIG_REALTEK_VENUS_USB */	//cfyeh- 2005/11/07
+	
 	if (usb_disabled())
 		return -ENODEV;
 
@@ -1273,12 +1610,192 @@ static int __init init (void)
 		sizeof (struct ehci_qh), sizeof (struct ehci_qtd),
 		sizeof (struct ehci_itd), sizeof (struct ehci_sitd));
 
+#ifdef CONFIG_REALTEK_VENUS_USB	//cfyeh+ 2005/11/07
+	//cfyeh+ 2005/10/05
+	ehci_hcd_devs = platform_device_register_simple((char *)hcd_name,
+							      -1, NULL, 0);
+
+	if (IS_ERR(ehci_hcd_devs)) {
+		ret = PTR_ERR(ehci_hcd_devs);
+		return ret;
+	}
+
+	return driver_register (&ehci_hcd_driver);
+	//cfyeh- 2005/10/05
+#else
 	return pci_register_driver (&ehci_pci_driver);
+#endif /* CONFIG_REALTEK_VENUS_USB */	//cfyeh- 2005/11/07
 }
 module_init (init);
 
 static void __exit cleanup (void) 
 {	
+#ifdef CONFIG_REALTEK_VENUS_USB	//cfyeh+ 2005/11/07
+	//cfyeh+ 2005/10/05
+	struct platform_device *hcd_dev = ehci_hcd_devs;
+	ehci_hcd_devs = NULL;
+
+	driver_unregister (&ehci_hcd_driver);
+	platform_device_unregister(hcd_dev);
+	//cfyeh- 2005/10/05
+#else
 	pci_unregister_driver (&ehci_pci_driver);
+#endif /* CONFIG_REALTEK_VENUS_USB */	//cfyeh- 2005/11/07
 }
 module_exit (cleanup);
+
+#ifdef USB_MARS_EHCI_CONNECTION_STATE_POLLING
+#undef USB_MARS_EHCI_CONNECTION_STATE_POLLING_RETRY
+static pid_t kehci_hubd_pid = 0;
+
+static int ehci_hub_thread(void *__unused)
+{
+	struct usb_hcd *hcd = rtd_ehci_hcd;
+	struct ehci_hcd *ehci = hcd_to_ehci (hcd);
+	struct usb_device *root = hcd->self.root_hub;
+	struct usb_device *udev = NULL;
+	unsigned port;
+	int ret;
+#ifdef USB_MARS_EHCI_CONNECTION_STATE_POLLING_RETRY
+	int retry = 0;
+#endif /* USB_MARS_EHCI_CONNECTION_STATE_POLLING_RETRY */
+	struct usb_device_descriptor *desc;
+
+	if (!hcd) {
+		printk("%s [Error] : hcd is NULL\n",__func__);
+		return -1;
+	}
+
+	if (!root) {
+		printk("%s [Error] : root is NULL\n",__func__);
+		return -1;
+	}
+
+#ifdef USB_512B_ALIGNMENT
+	desc = kmalloc(USB_512B_ALIGNMENT_SIZE, GFP_NOIO);
+#else
+	desc = kmalloc(sizeof(*desc), GFP_NOIO);
+#endif /* USB_512B_ALIGNMENT */
+
+	/*
+	* This thread doesn't need any user-level access,
+	* so get rid of all our resources
+	*/
+
+#ifdef USB_MARS_EHCI_CONNECTION_STATE_POLLING_RETRY
+_kehci_hubd_retry :
+	retry++;
+#endif /* USB_MARS_EHCI_CONNECTION_STATE_POLLING_RETRY */
+
+	daemonize("kehci_hubd");
+	allow_signal(SIGKILL);
+
+	/* Send me a signal to get me die (for debugging) */
+	do {
+		for (port = HCS_N_PORTS (ehci->hcs_params); port > 0; )
+		{
+			port--;
+			
+			usb_lock_device (hcd->self.root_hub);
+			udev = root->children [port];
+			// printk("port_status[%d] = 0x%x\n",port,readl(&ehci->regs->port_status[port]) );
+			if (!udev) {
+				usb_unlock_device (hcd->self.root_hub);
+				continue;
+			}
+				
+			if ((jiffies - ehci_port_jiffies[port]) <= USB_MARS_EHCI_CONNECTION_STATE_POLLING_TIME) {
+				// printk("ehci_port_jiffies[%d] = 0x%x\n",port , ehci_port_jiffies[port]);
+				// printk("jiffies - ehci_port_jiffies[%d] = 0x%x\n",port , jiffies - ehci_port_jiffies[port]);
+				usb_unlock_device (hcd->self.root_hub);
+				continue;
+			}
+
+			if(gUsbEhciHubSuspendResume[port] == 1) //Suspend
+			{
+				usb_unlock_device (hcd->self.root_hub);
+				continue;
+			}
+
+			// printk("port%d : udev->devnum = %d\n",port,udev->devnum);
+			ret = usb_get_descriptor(udev,USB_DT_DEVICE,0, desc, 8/*sizeof(*desc)*/);
+			/*
+			printk("ret = %d\n",ret);
+			printk("desc->bLength = 0x%x\n",desc->bLength);
+			printk("desc->bDescriptorType = 0x%x\n",ret,desc->bDescriptorType);
+			printk("desc->bcdUSB = 0x%x\n",ret,desc->bcdUSB);
+			printk("desc->bDeviceClass = 0x%x\n",ret,desc->bDeviceClass);
+			*/
+			if (ret < 0) {
+				switch(port) {
+					case 0:
+					case 1:
+						printk("#######[cfyeh-debug] %s(%d) calling usb_disconnect()!!!\n", __func__, __LINE__);
+#if defined CALL_USB_DISCONNECT_BEFORE_SETTING_REGS
+						usb_disconnect(&udev);
+						kfree(udev);
+						root->children [port] = NULL;
+#endif /* CALL_USB_DISCONNECT_BEFORE_SETTING_REGS */
+						if(port == 0)
+							outl(0x4400a081, VENUS_USB_HOST_USBIP_INPUT);
+						else // port == 1
+							outl(0x44002000, MARS_USB_HOST_USBIPINPUT_2PORT);
+
+						writel (readl(&ehci->regs->port_status[port]) | (1 << 8), &ehci->regs->port_status[port]);
+						// udelay(50*1000);
+						writel (readl(&ehci->regs->port_status[port]) & (~(1 << 8)), &ehci->regs->port_status[port]);
+						// printk("Port %d Disconnect!\n", port);
+
+						if(port == 0)
+							outl(0x4000a081, VENUS_USB_HOST_USBIP_INPUT);
+						else // port == 1
+							outl(0x40002000, MARS_USB_HOST_USBIPINPUT_2PORT);
+#if ! defined CALL_USB_DISCONNECT_BEFORE_SETTING_REGS
+						usb_disconnect(&udev);
+						kfree(udev);
+						root->children [port] = NULL;
+#endif /* CALL_USB_DISCONNECT_BEFORE_SETTING_REGS */
+						break;
+					default:
+						break;
+				}
+			}
+			usb_unlock_device (hcd->self.root_hub);
+		}
+
+		try_to_freeze(PF_FREEZE);
+		set_current_state(TASK_INTERRUPTIBLE);
+		// 1 sec
+		schedule_timeout(1*HZ);
+		// printk("0x%x\n",jiffies);
+	} while (!signal_pending(current));
+
+	printk("%s() [Error]: will go to die!\n",__func__);
+
+#ifdef USB_MARS_EHCI_CONNECTION_STATE_POLLING_RETRY
+	if (retry <= 3)
+		goto _kehci_hubd_retry;
+#endif /* USB_MARS_EHCI_CONNECTION_STATE_POLLING_RETRY */
+
+	kfree(desc);
+
+	return 1;
+}
+
+static void ehci_hub_thread_init(void)
+{
+	pid_t pid;
+
+	pid = kernel_thread(ehci_hub_thread, NULL, CLONE_KERNEL);
+	if (pid >= 0) 
+		kehci_hubd_pid = pid;
+}
+
+static void ehci_hub_thread_cleanup(void)
+{
+	int ret;
+
+	/* Kill the thread */
+	ret = kill_proc(kehci_hubd_pid, SIGKILL, 1);
+}	
+#endif // USB_MARS_EHCI_CONNECTION_STATE_POLLING

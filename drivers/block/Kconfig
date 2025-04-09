@@ -301,6 +301,14 @@ config BLK_DEV_LOOP
 
 	  Most users will answer N here.
 
+config BLK_DEV_LOOP_DIRECT_IO
+	bool "Direct I/O support for loopback device"
+	depends on BLK_DEV_LOOP
+	default	y
+	---help---
+	  Say Y here if you want to be able to use direct I/O to access
+	  the underlying file.
+
 config BLK_DEV_CRYPTOLOOP
 	tristate "Cryptoloop Support"
 	select CRYPTO

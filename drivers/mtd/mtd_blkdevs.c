@@ -53,20 +53,42 @@ static int do_blktrans_request(struct mtd_blktrans_ops *tr,
 	if (block + nsect > get_capacity(req->rq_disk))
 		return 0;
 
+	struct mtd_info *mtd = dev->mtd;
+	int page2sect_num;
+	
+	if ( mtd->type == MTD_NANDFLASH || strstr(mtd->name, "nand") )
+		page2sect_num = (mtd->oobblock) >> 9;
+
 	switch(rq_data_dir(req)) {
 	case READ:
-		for (; nsect > 0; nsect--, block++, buf += 512)
-			if (tr->readsect(dev, block, buf))
-				return 0;
+		if ( mtd->type == MTD_NANDFLASH || strstr(mtd->name, "nand") ){	//Ken
+			for (; nsect > 0; nsect--, block++, buf += 512){
+				if ( !(block%page2sect_num) )
+					if (tr->readsect(dev, block, buf))
+						return 0;
+			}
+		}else{
+			for (; nsect > 0; nsect--, block++, buf += 512)
+				if (tr->readsect(dev, block, buf))
+					return 0;
+		}
 		return 1;
 
 	case WRITE:
 		if (!tr->writesect)
 			return 0;
-
-		for (; nsect > 0; nsect--, block++, buf += 512)
-			if (tr->writesect(dev, block, buf))
-				return 0;
+		
+		if ( mtd->type == MTD_NANDFLASH || strstr(mtd->name, "nand") ){	//Ken
+			for (; nsect > 0; nsect--, block++, buf += 512){	//Ken, org
+				if ( !(block%page2sect_num) )
+					if (tr->writesect(dev, block, buf))
+						return 0;
+			}
+		}else{
+			for (; nsect > 0; nsect--, block++, buf += 512)
+				if (tr->writesect(dev, block, buf))
+					return 0;
+		}
 		return 1;
 
 	default:
@@ -290,13 +312,21 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 	gd->first_minor = (new->devnum) << tr->part_bits;
 	gd->fops = &mtd_blktrans_ops;
 	
-	snprintf(gd->disk_name, sizeof(gd->disk_name),
-		 "%s%c", tr->name, (tr->part_bits?'a':'0') + new->devnum);
-	snprintf(gd->devfs_name, sizeof(gd->devfs_name),
-		 "%s/%c", tr->name, (tr->part_bits?'a':'0') + new->devnum);
+	if(!strcmp(new->mtd->name, "disc")) {
+		snprintf(gd->disk_name, sizeof(gd->disk_name),
+			 "disc");
+		snprintf(gd->devfs_name, sizeof(gd->devfs_name),
+			 "%s/disc", tr->name);
+	} else {
+		snprintf(gd->disk_name, sizeof(gd->disk_name),
+			 "%s%c", tr->name, (tr->part_bits?'a':'0') + new->devnum);
+		snprintf(gd->devfs_name, sizeof(gd->devfs_name),
+			 "%s/%c", tr->name, (tr->part_bits?'a':'0') + new->devnum);
+	}
 
 	/* 2.5 has capacity in units of 512 bytes while still
 	   having BLOCK_SIZE_BITS set to 10. Just to keep us amused. */
+
 	set_capacity(gd, (new->size * new->blksize) >> 9);
 
 	gd->private_data = new;
@@ -365,7 +395,6 @@ static struct mtd_notifier blktrans_notifier = {
 int register_mtd_blktrans(struct mtd_blktrans_ops *tr)
 {
 	int ret, i;
-
 	/* Register the notifier if/when the first device type is 
 	   registered, to prevent the link/init ordering from fucking
 	   us over. */

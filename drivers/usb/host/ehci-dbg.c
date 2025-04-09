@@ -27,6 +27,9 @@
 #define ehci_warn(ehci, fmt, args...) \
 	dev_warn (ehci_to_hcd(ehci)->self.controller , fmt , ## args )
 
+#define ehci_force_dbg(ehci, fmt, args...) \
+	dev_printk(KERN_EMERG , ehci_to_hcd(ehci)->self.controller , fmt , ## args)
+
 #ifdef EHCI_VERBOSE_DEBUG
 #	define vdbg dbg
 #	define ehci_vdbg ehci_dbg
@@ -288,9 +291,36 @@ static inline int __attribute__((__unused__))
 dbg_intr_buf (char *buf, unsigned len, const char *label, u32 enable)
 { return 0; }
 
-static inline int __attribute__((__unused__))
+static int
 dbg_port_buf (char *buf, unsigned len, const char *label, int port, u32 status)
-{ return 0; }
+{
+	char	*sig;
+
+	/* signaling state */
+	switch (status & (3 << 10)) {
+	case 0 << 10: sig = "se0"; break;
+	case 1 << 10: sig = "k"; break;		/* low speed */
+	case 2 << 10: sig = "j"; break;
+	default: sig = "?"; break;
+	}
+
+	return scnprintf (buf, len,
+		"%s%sport %d status %06x%s%s sig=%s %s%s%s%s%s%s%s%s%s",
+		label, label [0] ? " " : "", port, status,
+		(status & PORT_POWER) ? " POWER" : "",
+		(status & PORT_OWNER) ? " OWNER" : "",
+		sig,
+		(status & PORT_RESET) ? " RESET" : "",
+		(status & PORT_SUSPEND) ? " SUSPEND" : "",
+		(status & PORT_RESUME) ? " RESUME" : "",
+		(status & PORT_OCC) ? " OCC" : "",
+		(status & PORT_OC) ? " OC" : "",
+		(status & PORT_PEC) ? " PEC" : "",
+		(status & PORT_PE) ? " PE" : "",
+		(status & PORT_CSC) ? " CSC" : "",
+		(status & PORT_CONNECT) ? " CONNECT" : ""
+	    );
+}
 
 #endif	/* DEBUG */
 
@@ -307,10 +337,14 @@ dbg_port_buf (char *buf, unsigned len, const char *label, int port, u32 status)
 	ehci_dbg (ehci, "%s\n", _buf); \
 }
 
+extern int bForEhciDebug;
 #define dbg_port(ehci, label, port, status) { \
 	char _buf [80]; \
 	dbg_port_buf (_buf, sizeof _buf, label, port, status); \
-	ehci_dbg (ehci, "%s\n", _buf); \
+	if(bForEhciDebug) \
+		ehci_force_dbg (ehci, "%s\n", _buf); \
+	else \
+		ehci_dbg (ehci, "%s\n", _buf); \
 }
 
 /*-------------------------------------------------------------------------*/
@@ -527,7 +561,7 @@ show_periodic (struct class_device *class_dev, char *buf)
 						p.qh->period,
 						le32_to_cpup (&p.qh->hw_info2)
 							/* uframe masks */
-							& 0xffff,
+							& (QH_CMASK | QH_SMASK),
 						p.qh);
 				size -= temp;
 				next += temp;

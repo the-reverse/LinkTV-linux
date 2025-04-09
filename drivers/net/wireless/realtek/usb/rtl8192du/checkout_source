@@ -1,0 +1,7 @@
+# $1 : path of driver
+
+rm $2 -rf
+cd $1
+sh make_release rtl8192du drv
+cd -
+mv $1/rtl8192_8188DU_linux_drv/ $2

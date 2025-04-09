@@ -18,6 +18,11 @@
 
 extern const char linux_banner[];
 
+#ifdef CONFIG_REALTEK_RESERVE_DVR
+#define SYNC_STRUCT_ADDR 0xa00000cc
+#define UNLZMA_SYNC_ADDR 0xa00000e0
+#endif
+
 #define INT_MAX		((int)(~0U>>1))
 #define INT_MIN		(-INT_MAX - 1)
 #define UINT_MAX	(~0U)
@@ -121,14 +126,24 @@ asmlinkage int vprintk(const char *fmt, va_list args)
 asmlinkage int printk(const char * fmt, ...)
 	__attribute__ ((format (printf, 1, 2)));
 #else
-static inline int vprintk(const char *s, va_list args)
+/*static inline int vprintk(const char *s, va_list args)
 	__attribute__ ((format (printf, 1, 0)));
 static inline int vprintk(const char *s, va_list args) { return 0; }
 static inline int printk(const char *s, ...)
 	__attribute__ ((format (printf, 1, 2)));
 static inline int printk(const char *s, ...) { return 0; }
+*/
+// This definition can save space and the passed arguments like "i++" and "func()" can be run.
+#define vprintk(fmt, args)      ((void)(fmt, args), 0)
+#define printk(...)             (__VA_ARGS__, 0)
 #endif
-
+#ifdef CONFIG_REALTEK_WATCHPOINT
+#define WATCH_W         0x1
+#define WATCH_R         0x2
+#define WATCH_I         0x4
+int set_watch_point(unsigned long addr, unsigned long prot);
+int clr_watch_point(void);
+#endif
 unsigned long int_sqrt(unsigned long);
 
 static inline int __attribute_pure__ long_log2(unsigned long x)
@@ -301,6 +316,93 @@ struct sysinfo {
 
 extern void BUILD_BUG(void);
 #define BUILD_BUG_ON(condition) do { if (condition) BUILD_BUG(); } while(0)
+
+#ifdef  CONFIG_REALTEK_SCHED_LOG
+extern unsigned int            *buf_head;
+extern unsigned int            *buf_tail;
+extern unsigned int            *buf_ptr;
+extern unsigned int            sched_log_flag;
+extern unsigned int            time_scale;
+static inline void log_sched(int pid)
+{
+	unsigned int count;
+
+	asm ("mfc0 %0, $9;": "=r"(count));
+	count /= time_scale;
+	*buf_ptr = count;
+	if (++buf_ptr == buf_tail) {
+		buf_ptr = buf_head;
+		sched_log_flag |= 2;
+	}
+
+	*buf_ptr = 0xc0000000 | pid;
+	if (++buf_ptr == buf_tail) {
+		buf_ptr = buf_head;
+		sched_log_flag |= 2;
+	}
+}
+
+static inline void log_event(int event)
+{
+	unsigned int count;
+	unsigned int status;
+
+	asm ("mfc0 %0, $12;": "=r"(status));
+	asm ("mtc0 %0, $12;": : "r"(status & 0xfffffffe));
+	asm ("mfc0 %0, $9;": "=r"(count));
+	count /= time_scale;
+	*buf_ptr = count;
+	if (++buf_ptr == buf_tail) {
+		buf_ptr = buf_head;
+		sched_log_flag |= 2;
+	}
+
+	*buf_ptr = 0x20000000 | event;
+	if (++buf_ptr == buf_tail) {
+		buf_ptr = buf_head;
+		sched_log_flag |= 2;
+	}
+	asm ("mtc0 %0, $12;": : "r"(status));
+}
+
+static inline void log_intr_enter(int irq)
+{
+	unsigned int count;
+
+	asm ("mfc0 %0, $9;": "=r"(count));
+	count /= time_scale;
+	*buf_ptr = count;
+	if (++buf_ptr == buf_tail) {
+		buf_ptr = buf_head;
+		sched_log_flag |= 2;
+	}
+
+	*buf_ptr = 0x10000000 | irq;
+	if (++buf_ptr == buf_tail) {
+		buf_ptr = buf_head;
+		sched_log_flag |= 2;
+	}
+}
+
+static inline void log_intr_exit(int irq)
+{
+	unsigned int count;
+
+	asm ("mfc0 %0, $9;": "=r"(count));
+	count /= time_scale;
+	*buf_ptr = count;
+	if (++buf_ptr == buf_tail) {
+		buf_ptr = buf_head;
+		sched_log_flag |= 2;
+	}
+
+	*buf_ptr = irq;
+	if (++buf_ptr == buf_tail) {
+		buf_ptr = buf_head;
+		sched_log_flag |= 2;
+	}
+}
+#endif
 
 #ifdef CONFIG_SYSCTL
 extern int randomize_va_space;

@@ -16,7 +16,7 @@
 
 /* Free memory management - zoned buddy allocator.  */
 #ifndef CONFIG_FORCE_MAX_ZONEORDER
-#define MAX_ORDER 11
+#define MAX_ORDER 13
 #else
 #define MAX_ORDER CONFIG_FORCE_MAX_ZONEORDER
 #endif
@@ -66,10 +66,18 @@ struct per_cpu_pageset {
 #define ZONE_DMA		0
 #define ZONE_NORMAL		1
 #define ZONE_HIGHMEM		2
+#ifdef CONFIG_REALTEK_TEXT_DEBUG
+#define ZONE_DVR		3
+#define ZONE_TEXT		4
 
-#define MAX_NR_ZONES		3	/* Sync this with ZONES_SHIFT */
+#define MAX_NR_ZONES		5	/* Sync this with ZONES_SHIFT */
+#define ZONES_SHIFT		3	/* ceil(log2(MAX_NR_ZONES)) */
+#else
+#define ZONE_DVR		3
+
+#define MAX_NR_ZONES		4	/* Sync this with ZONES_SHIFT */
 #define ZONES_SHIFT		2	/* ceil(log2(MAX_NR_ZONES)) */
-
+#endif
 
 /*
  * When a memory allocation must conform to specific limitations (such
@@ -84,7 +92,11 @@ struct per_cpu_pageset {
  * be 8 (2 ** 3) zonelists.  GFP_ZONETYPES defines the number of possible
  * combinations of zone modifiers in "zone modifier space".
  */
+#ifdef CONFIG_REALTEK_TEXT_DEBUG
+#define GFP_ZONEMASK	0x07
+#else
 #define GFP_ZONEMASK	0x03
+#endif
 /*
  * As an optimisation any zone modifier bits which are only valid when
  * no other zone modifier bits are set (loners) should be placed in
@@ -96,8 +108,14 @@ struct per_cpu_pageset {
  * Use the first form when the left most bit is not a "loner", otherwise
  * use the second.
  */
-/* #define GFP_ZONETYPES	(GFP_ZONEMASK + 1) */		/* Non-loner */
-#define GFP_ZONETYPES	((GFP_ZONEMASK + 1) / 2 + 1)		/* Loner */
+#ifdef CONFIG_REALTEK_TEXT_DEBUG
+#define GFP_ZONETYPES	((GFP_ZONEMASK + 1) / 2 + 1) 		/* Loner */
+#else
+#define GFP_ZONETYPES	(GFP_ZONEMASK + 1) 			/* Non-loner */
+#endif
+
+#define ZN_EXHAUSTABLE	0x01
+#define ZN_DISABLE	0x02
 
 /*
  * On machines where it is needed (eg PCs) we divide physical memory
@@ -206,6 +224,11 @@ struct zone {
 	unsigned long		spanned_pages;	/* total size, including holes */
 	unsigned long		present_pages;	/* amount of memory (excluding holes) */
 
+        /*
+         * Used to record the zone properties.
+         */
+        unsigned long           flags;
+
 	/*
 	 * rarely used fields:
 	 */
@@ -218,7 +241,7 @@ struct zone {
  * go. A value of 12 for DEF_PRIORITY implies that we will scan 1/4096th of the
  * queues ("queue_length >> 12") during an aging round.
  */
-#define DEF_PRIORITY 12
+#define DEF_PRIORITY 4
 
 /*
  * One allocation request operates on a zonelist. A zonelist
@@ -354,6 +377,11 @@ static inline int is_normal_idx(int idx)
 {
 	return (idx == ZONE_NORMAL);
 }
+
+static inline int is_dvr_idx(int idx)
+{
+	return (idx == ZONE_DVR);
+}
 /**
  * is_highmem - helper function to quickly check if a struct zone is a 
  *              highmem zone or not.  This is an attempt to keep references
@@ -368,6 +396,11 @@ static inline int is_highmem(struct zone *zone)
 static inline int is_normal(struct zone *zone)
 {
 	return zone == zone->zone_pgdat->node_zones + ZONE_NORMAL;
+}
+
+static inline int is_dvr(struct zone *zone)
+{
+	return zone == zone->zone_pgdat->node_zones + ZONE_DVR;
 }
 
 /* These two functions are used to setup the per zone pages min values */
@@ -415,7 +448,11 @@ extern struct pglist_data contig_page_data;
 #endif
 
 /* There are currently 3 zones: DMA, Normal & Highmem, thus we need 2 bits */
+#ifdef CONFIG_REALTEK_TEXT_DEBUG
+#define MAX_ZONES_SHIFT		3
+#else
 #define MAX_ZONES_SHIFT		2
+#endif
 
 #if ZONES_SHIFT > MAX_ZONES_SHIFT
 #error ZONES_SHIFT > MAX_ZONES_SHIFT

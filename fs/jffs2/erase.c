@@ -117,6 +117,7 @@ void jffs2_erase_pending_blocks(struct jffs2_sb_info *c, int count)
 			jeb = list_entry(c->erase_complete_list.next, struct jffs2_eraseblock, list);
 			list_del(&jeb->list);
 			spin_unlock(&c->erase_completion_lock);
+			up(&c->erase_free_sem);
 			jffs2_mark_erased_block(c, jeb);
 
 			if (!--count) {
@@ -137,6 +138,7 @@ void jffs2_erase_pending_blocks(struct jffs2_sb_info *c, int count)
 			jffs2_free_all_node_refs(c, jeb);
 			list_add(&jeb->list, &c->erasing_list);
 			spin_unlock(&c->erase_completion_lock);
+			up(&c->erase_free_sem);
 
 			jffs2_erase_block(c, jeb);
 
@@ -145,15 +147,18 @@ void jffs2_erase_pending_blocks(struct jffs2_sb_info *c, int count)
 		}
 
 		/* Be nice */
-		cond_resched();
+		//cond_resched();
+		yield();//add by alexchang 0823-2010
+		up(&c->erase_free_sem);
 		spin_lock(&c->erase_completion_lock);
 	}
 
 	spin_unlock(&c->erase_completion_lock);
+	up(&c->erase_free_sem);
  done:
 	D1(printk(KERN_DEBUG "jffs2_erase_pending_blocks completed\n"));
 
-	up(&c->erase_free_sem);
+	//up(&c->erase_free_sem);
 }
 
 static void jffs2_erase_succeeded(struct jffs2_sb_info *c, struct jffs2_eraseblock *jeb)

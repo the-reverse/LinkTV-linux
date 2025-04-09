@@ -309,6 +309,7 @@ config PCMCIA_WL3501
 
 comment "Prism GT/Duette 802.11(a/b/g) PCI/Cardbus support"
 	depends on NET_RADIO && PCI
+	
 config PRISM54
 	tristate 'Intersil Prism GT/Duette/Indigo PCI/Cardbus' 
 	depends on PCI && NET_RADIO && EXPERIMENTAL
@@ -357,9 +358,11 @@ config PRISM54
 
 # yes, this works even when no drivers are selected
 config NET_WIRELESS
-	bool
-	depends on NET_RADIO && (ISA || PCI || PPC_PMAC || PCMCIA)
-	default y
+	bool 
+	depends on NET_RADIO && (USB || ISA || PCI || PPC_PMAC || PCMCIA)
+	default y	 
+
+source "drivers/net/wireless/realtek/Kconfig"
 
 endmenu
 

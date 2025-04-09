@@ -31,3 +31,24 @@ obj-$(CONFIG_PRISM54)		+= prism54/
 # 16-bit wireless PCMCIA client drivers
 obj-$(CONFIG_PCMCIA_RAYCS)	+= ray_cs.o
 obj-$(CONFIG_PCMCIA_WL3501)	+= wl3501_cs.o
+
+obj-$(CONFIG_REALTEK_PCI_RTL8185)   += realtek/pci/rtl8185/
+
+obj-$(CONFIG_REALTEK_PCI_RTL8190)   += realtek/pci/rtl8190/
+
+obj-$(CONFIG_REALTEK_PCI_RTL8192SE)	+= realtek/pci/rtl8192se/
+
+obj-$(CONFIG_REALTEK_PCI_RTL8192CE)	+= realtek/pci/rtl8192ce/
+
+obj-$(CONFIG_REALTEK_USB_RTL8187)   += realtek/usb/rtl8187/
+
+obj-$(CONFIG_REALTEK_USB_RTL8709)   += realtek/usb/rtl8709/
+
+obj-$(CONFIG_REALTEK_USB_RTL8192)   += realtek/usb/11n8709/
+
+obj-$(CONFIG_REALTEK_USB_RTL8191SU) += realtek/usb/rtl8712/
+
+obj-$(CONFIG_REALTEK_USB_RTL8192CU) += realtek/usb/rtl8192cu/
+
+obj-$(CONFIG_REALTEK_USB_RTL8192DU) += realtek/usb/rtl8192du/
+

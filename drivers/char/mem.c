@@ -24,6 +24,7 @@
 #include <linux/ptrace.h>
 #include <linux/device.h>
 #include <linux/backing-dev.h>
+#include <linux/pagemap.h>
 
 #include <asm/uaccess.h>
 #include <asm/io.h>
@@ -229,8 +230,34 @@ static ssize_t write_mem(struct file * file, const char __user * buf,
 	return written;
 }
 
+static int mem_populate(struct vm_area_struct *vma, unsigned long addr,
+		unsigned long len, pgprot_t prot, unsigned long pgoff,
+		int nonblock)
+{
+	struct mm_struct *mm = vma->vm_mm;
+	int err;
+
+repeat:
+	err = install_phys_pte(mm, vma, addr, pgoff, prot);
+	if (err)
+		return err;
+
+	len -= PAGE_SIZE;
+	addr += PAGE_SIZE;
+	pgoff++;
+	if (len)
+		goto repeat;
+
+	return 0;
+}
+
+static struct vm_operations_struct mem_vm_ops = {
+	.populate	= mem_populate,
+};
+
 static int mmap_mem(struct file * file, struct vm_area_struct * vma)
 {
+	unsigned long prot;
 #if defined(__HAVE_PHYS_MEM_ACCESS_PROT)
 	unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
 
@@ -245,6 +272,18 @@ static int mmap_mem(struct file * file, struct vm_area_struct * vma)
 	if (uncached)
 		vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 #endif
+
+	prot = pgprot_val(vma->vm_page_prot);
+//	prot = (prot & ~_CACHE_MASK) | _CACHE_UNCACHED;
+	if (prot & _PAGE_WRITE)
+		prot = prot | _PAGE_FILE | _PAGE_VALID | _PAGE_DIRTY;
+	else
+		prot = prot | _PAGE_FILE | _PAGE_VALID;
+	prot &= ~_PAGE_PRESENT;
+	vma->vm_page_prot = __pgprot(prot);
+
+	vma->vm_flags |= VM_NONLINEAR;
+	vma->vm_ops = &mem_vm_ops;
 
 	/* Remap-pfn-range will mark the range VM_IO and VM_RESERVED */
 	if (remap_pfn_range(vma,

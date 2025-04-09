@@ -1,0 +1,1 @@
+#define CONFIG_E1000_9301CT 1

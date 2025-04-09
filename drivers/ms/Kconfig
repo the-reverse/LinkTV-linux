@@ -1,0 +1,33 @@
+#
+# MS subsystem configuration
+#
+
+menu "MS/MSPRO Card support"
+
+config MS
+	tristate "MS support"
+	help
+	  MS is the "multi-media card" bus protocol.
+
+	  If you want MS support, you should say Y here and also
+	  to the specific driver for your MS interface.
+
+config MS_BLOCK
+	tristate "MS block device driver"
+	depends on MS
+	default y
+	help
+	  Say Y here to enable the MS block device driver support.
+	  This provides a block device driver, which you can use to
+	  mount the filesystem. Almost everyone wishing MS support
+	  should say Y or M here.
+
+config MS_RTKMS
+        tristate "Realtek MS/MSPRO Host Driver"
+        depends on MS && MS_BLOCK
+        help
+          This selects Realtek MS/PRO card reader.
+
+          If unsure, say N.
+
+endmenu

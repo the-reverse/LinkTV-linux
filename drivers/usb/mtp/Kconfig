@@ -1,0 +1,18 @@
+config USB_MTP
+    tristate "USB MTP/PTP support"
+    depends on USB
+    ---help---
+      Say Y here if you have a USB device that provides MTP/PTP , 
+      and you want to connect it to your USB bus.
+
+      To compile this driver as a module, choose M here: the
+      module will be called usbmtp.
+
+config USB_MTP_MAX_TRANSFER_SIZE_ENABLE
+    bool "Enable USB MTP/PTP Max Transfer Length"
+    depends on USB_MTP
+    help
+      Enable USB MTP/PTP max transfer length support.
+
+      If unsure, say N.
+

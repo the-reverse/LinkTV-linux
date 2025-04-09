@@ -1,0 +1,1 @@
+#define CONFIG_MARS_CEC 1

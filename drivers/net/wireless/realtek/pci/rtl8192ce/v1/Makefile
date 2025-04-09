@@ -1,0 +1,2 @@
+obj-$(CONFIG_REALTEK_PCI_RTL8192CE)       += rtllib/
+obj-$(CONFIG_REALTEK_PCI_RTL8192CE)       += HAL/rtl8192/

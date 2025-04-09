@@ -211,20 +211,44 @@ int fat_search_long(struct inode *inode, const unsigned char *name,
 	struct nls_table *nls_io = sbi->nls_io;
 	struct nls_table *nls_disk = sbi->nls_disk;
 	wchar_t bufuname[14];
-	unsigned char xlate_len, nr_slots;
+	unsigned char nr_slots;
 	wchar_t *unicode = NULL;
 	unsigned char work[8], bufname[260];	/* 256 + 4 */
+	int xlate_len;
 	int uni_xlate = sbi->options.unicode_xlate;
 	int utf8 = sbi->options.utf8;
 	int anycase = (sbi->options.name_check != 's');
 	unsigned short opt_shortname = sbi->options.shortname;
 	loff_t cpos = 0;
 	int chl, i, j, last_u, err;
+	static loff_t ppos = 0;
+	int isCached = 0;
 
+	if (ppos != 0) {
+		cpos = ppos;
+		isCached = 2;
+	}
+//	printk("searching %s, cache value: %lld...\n", name, ppos);
 	err = -ENOENT;
 	while(1) {
-		if (fat_get_entry(inode, &cpos, &bh, &de) == -1)
-			goto EODir;
+parse_start:
+		if (isCached > 0) {
+			if (--isCached == 0) {
+				if (bh) {
+					brelse(bh);
+					bh = NULL;
+				}
+				cpos = 0;
+			}
+		}
+		if (fat_get_entry(inode, &cpos, &bh, &de) == -1) {
+//			printk("1 Error in fat_get_entry...%lld %lld %d\n", cpos, ppos, isCached);
+			ppos = 0;
+			if (isCached > 0)
+				continue;
+			else
+				goto EODir;
+		}
 parse_record:
 		nr_slots = 0;
 		if (de->name[0] == DELETED_FLAG)
@@ -246,6 +270,7 @@ parse_record:
 					__get_free_page(GFP_KERNEL);
 				if (!unicode) {
 					brelse(bh);
+					ppos = 0;
 					return -ENOMEM;
 				}
 			}
@@ -274,8 +299,14 @@ parse_long:
 				if (ds->id & 0x40) {
 					unicode[offset + 13] = 0;
 				}
-				if (fat_get_entry(inode, &cpos, &bh, &de) < 0)
-					goto EODir;
+				if (fat_get_entry(inode, &cpos, &bh, &de) < 0) {
+//					printk("2 Error in fat_get_entry...%lld %lld %d\n", cpos, ppos, isCached);
+					ppos = 0;
+					if (isCached > 0)
+						goto parse_start;
+					else
+						goto EODir;
+				}
 				if (slot == 0)
 					break;
 				ds = (struct msdos_dir_slot *) de;
@@ -344,13 +375,15 @@ parse_long:
 				goto Found;
 
 		if (nr_slots) {
+			void *longname = unicode + 261;
+			int buf_size = PAGE_SIZE - (261 * sizeof(unicode[0]));
 			xlate_len = utf8
-				?utf8_wcstombs(bufname, unicode, sizeof(bufname))
-				:uni16_to_x8(bufname, unicode, uni_xlate, nls_io);
+				? utf8_wcstombs(longname, unicode, buf_size)
+				: uni16_to_x8(longname, unicode, uni_xlate, nls_io);
 			if (xlate_len != name_len)
 				continue;
-			if ((!anycase && !memcmp(name, bufname, xlate_len)) ||
-			    (anycase && !nls_strnicmp(nls_io, name, bufname,
+			if ((!anycase && !memcmp(name, longname, xlate_len)) ||
+			    (anycase && !nls_strnicmp(nls_io, name, longname,
 								xlate_len)))
 				goto Found;
 		}
@@ -364,6 +397,8 @@ Found:
 	sinfo->bh = bh;
 	sinfo->i_pos = fat_make_i_pos(sb, sinfo->bh, sinfo->de);
 	err = 0;
+//	if (isCached > 0) printk("Hit...\n");
+	ppos = cpos;
 EODir:
 	if (unicode)
 		free_page((unsigned long)unicode);
@@ -408,6 +443,7 @@ static int fat_readdirx(struct inode *inode, struct file *filp, void *dirent,
 	int chi, chl, i, i2, j, last, last_u, dotoffset = 0;
 	loff_t cpos;
 	int ret = 0;
+	unsigned long start_cluster;
 
 	lock_kernel();
 
@@ -436,6 +472,13 @@ GetNew:
 	long_slots = 0;
 	if (fat_get_entry(inode, &cpos, &bh, &de) == -1)
 		goto EODir;
+	if ((inode->i_ino != MSDOS_ROOT_INO) && (filp->f_pos == 0)) {
+		/* The first entry should be . */
+		if (de->name[0] != '.') {
+			printk("[FAT INFO] corrupted directory...\n");
+			goto FillFailed;
+		}
+	}
 	/* Check for long filename entry */
 	if (isvfat) {
 		if (de->name[0] == DELETED_FLAG)
@@ -623,6 +666,23 @@ ParseLong:
 			fill_name = NULL;
 			fill_len = 0;
 		}
+	}
+	/* filter out the unreasonable entries */ 
+	if ((de->lcase & 0xe7) != 0) {
+//		printk("unreasonable entry...\n");
+		goto RecEnd;
+	}
+//	if (de->attr & ATTR_HIDDEN) {
+//		printk("hidden [%s] \n", fill_name);
+//		goto RecEnd;
+//	}
+	/* get the start cluster of this entry */
+	start_cluster = le16_to_cpu(de->start);
+	if (sbi->fat_bits == 32)
+		start_cluster |= (le16_to_cpu(de->starthi) << 16);
+	if (sbi->max_cluster <= start_cluster) {
+//		printk("start cluster is out of range...\n");
+		goto RecEnd;
 	}
 	if (filldir(dirent, fill_name, fill_len, *furrfu, inum,
 		    (de->attr & ATTR_DIR) ? DT_DIR : DT_REG) < 0)
@@ -822,10 +882,23 @@ int fat_subdirs(struct inode *dir)
 
 	bh = NULL;
 	cpos = 0;
+	/* Check if this directory is valid */
+	if (dir->i_ino != MSDOS_ROOT_INO) {
+		if (fat_get_entry(dir, &cpos, &bh, &de) == -1)
+			goto out;
+		/* The first entry should be . */
+		if (de->name[0] != '.') {
+			printk("[FAT INFO] corrupted directory (%s)...\n", __FUNCTION__);
+			goto out;
+		}
+		if (de->attr & ATTR_DIR)
+			count++;
+	}
 	while (fat_get_short_entry(dir, &cpos, &bh, &de) >= 0) {
 		if (de->attr & ATTR_DIR)
 			count++;
 	}
+out:
 	brelse(bh);
 	return count;
 }

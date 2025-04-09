@@ -149,7 +149,7 @@ struct inet_sock {
 		u32			addr;
 		struct flowi		fl;
 	} cork;
-};
+} __attribute__ ((packed));
 
 #define IPCORK_OPT	1	/* ip-options has been held in ipcork.opt */
 #define IPCORK_ALLFRAG	2	/* always fragment (for ipv6 for now) */
@@ -195,7 +195,7 @@ struct iphdr {
 	__u32	saddr;
 	__u32	daddr;
 	/*The options start here. */
-};
+} __attribute__ ((packed));
 
 struct ip_auth_hdr {
 	__u8  nexthdr;

@@ -69,7 +69,9 @@ int request_module(const char *fmt, ...)
 	char module_name[MODULE_NAME_LEN];
 	unsigned int max_modprobes;
 	int ret;
-	char *argv[] = { modprobe_path, "-q", "--", module_name, NULL };
+	// no use "-q" parameter because busybox has a bug and cannot handle this.
+//	char *argv[] = { modprobe_path, "-q", "--", module_name, NULL };
+	char *argv[] = { modprobe_path, "--", module_name, NULL };
 	static char *envp[] = { "HOME=/",
 				"TERM=linux",
 				"PATH=/sbin:/usr/sbin:/bin:/usr/bin",
@@ -167,7 +169,7 @@ static int wait_for_helper(void *data)
 	do_sigaction(SIGCHLD, &sa, (struct k_sigaction *)0);
 	allow_signal(SIGCHLD);
 
-	pid = kernel_thread(____call_usermodehelper, sub_info, SIGCHLD);
+	pid = kernel_thread(____call_usermodehelper, sub_info, CLONE_HELPER | SIGCHLD);
 	if (pid < 0) {
 		sub_info->retval = pid;
 	} else {
@@ -201,7 +203,7 @@ static void __call_usermodehelper(void *data)
 				    CLONE_FS | CLONE_FILES | SIGCHLD);
 	else
 		pid = kernel_thread(____call_usermodehelper, sub_info,
-				    CLONE_VFORK | SIGCHLD);
+				    CLONE_HELPER | CLONE_VFORK | SIGCHLD);
 
 	if (pid < 0) {
 		sub_info->retval = pid;
@@ -248,6 +250,13 @@ int call_usermodehelper(char *path, char **argv, char **envp, int wait)
 	return sub_info.retval;
 }
 EXPORT_SYMBOL(call_usermodehelper);
+
+void empty_usermodehelper_queue(void)
+{
+	flush_workqueue(khelper_wq);
+	freeze_worker_thread(khelper_wq);
+}
+EXPORT_SYMBOL(empty_usermodehelper_queue);
 
 void __init usermodehelper_init(void)
 {

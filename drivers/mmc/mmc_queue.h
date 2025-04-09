@@ -18,12 +18,13 @@ struct mmc_queue {
 	struct scatterlist	*sg;
 };
 
-struct mmc_io_request {
-	struct request		*rq;
-	int			num;
-	struct mmc_command	selcmd;		/* mmc_queue private */
-	struct mmc_command	cmd[4];		/* max 4 commands */
-};
+
+//struct mmc_io_request {
+//	struct request		*rq;
+//	int			num;
+//	struct mmc_command	selcmd;		/* mmc_queue private */
+//	struct mmc_command	cmd[4];		/* max 4 commands */
+//};
 
 extern int mmc_init_queue(struct mmc_queue *, struct mmc_card *, spinlock_t *);
 extern void mmc_cleanup_queue(struct mmc_queue *);

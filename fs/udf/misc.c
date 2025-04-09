@@ -46,6 +46,8 @@ udf_tgetblk(struct super_block *sb, int block)
 struct buffer_head *
 udf_tread(struct super_block *sb, int block)
 {
+	if (block == 0xffffffff)
+		return NULL;
 	if (UDF_QUERY_FLAG(sb, UDF_FLAG_VARCONV))
 		return sb_bread(sb, udf_fixed_to_variable(block));
 	else
@@ -219,7 +221,7 @@ udf_read_tagged(struct super_block *sb, uint32_t block, uint32_t location, uint1
 	if (block == 0xFFFFFFFF)
 		return NULL;
 
-	bh = udf_tread(sb, block + UDF_SB_SESSION(sb));
+	bh = udf_tread(sb, block);
 	if (!bh)
 	{
 		udf_debug("block=%d, location=%d: read failed\n", block + UDF_SB_SESSION(sb), location);

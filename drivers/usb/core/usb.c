@@ -22,13 +22,6 @@
  */
 
 #include <linux/config.h>
-
-#ifdef CONFIG_USB_DEBUG
-	#define DEBUG
-#else
-	#undef DEBUG
-#endif
-
 #include <linux/module.h>
 #include <linux/string.h>
 #include <linux/bitops.h>
@@ -49,7 +42,6 @@
 
 #include "hcd.h"
 #include "usb.h"
-
 
 const char *usbcore_name = "usbcore";
 
@@ -78,6 +70,10 @@ static struct device_driver usb_generic_driver = {
 
 static int usb_generic_driver_data;
 
+#ifdef USB_WARNING_WHEN_DEVICE_NOT_SUPPORT
+extern int usb_probe_match_id;
+#endif /* USB_WARNING_WHEN_DEVICE_NOT_SUPPORT */
+
 /* called from driver core with usb_bus_type.subsys writelock */
 static int usb_probe_interface(struct device *dev)
 {
@@ -96,6 +92,9 @@ static int usb_probe_interface(struct device *dev)
 
 	id = usb_match_id (intf, driver->id_table);
 	if (id) {
+#ifdef USB_WARNING_WHEN_DEVICE_NOT_SUPPORT
+		usb_probe_match_id = (int)id;
+#endif /* USB_WARNING_WHEN_DEVICE_NOT_SUPPORT */
 		dev_dbg (dev, "%s - got id\n", __FUNCTION__);
 		intf->condition = USB_INTERFACE_BINDING;
 		error = driver->probe (intf, id);
@@ -536,6 +535,7 @@ static int usb_hotplug (struct device *dev, char **envp, int num_envp,
 {
 	struct usb_interface *intf;
 	struct usb_device *usb_dev;
+	struct usb_host_interface *alt;
 	int i = 0;
 	int length = 0;
 
@@ -552,6 +552,7 @@ static int usb_hotplug (struct device *dev, char **envp, int num_envp,
 
 	intf = to_usb_interface(dev);
 	usb_dev = interface_to_usbdev (intf);
+	alt = intf->cur_altsetting;
 	
 	if (usb_dev->devnum < 0) {
 		pr_debug ("usb %s: already deleted?\n", dev->bus_id);
@@ -594,46 +595,27 @@ static int usb_hotplug (struct device *dev, char **envp, int num_envp,
 				usb_dev->descriptor.bDeviceProtocol))
 		return -ENOMEM;
 
-	if (usb_dev->descriptor.bDeviceClass == 0) {
-		struct usb_host_interface *alt = intf->cur_altsetting;
+	if (add_hotplug_env_var(envp, num_envp, &i,
+				buffer, buffer_size, &length,
+				"INTERFACE=%d/%d/%d",
+				alt->desc.bInterfaceClass,
+				alt->desc.bInterfaceSubClass,
+				alt->desc.bInterfaceProtocol))
+		return -ENOMEM;
 
-		/* 2.4 only exposed interface zero.  in 2.5, hotplug
-		 * agents are called for all interfaces, and can use
-		 * $DEVPATH/bInterfaceNumber if necessary.
-		 */
-		if (add_hotplug_env_var(envp, num_envp, &i,
-					buffer, buffer_size, &length,
-					"INTERFACE=%d/%d/%d",
-					alt->desc.bInterfaceClass,
-					alt->desc.bInterfaceSubClass,
-					alt->desc.bInterfaceProtocol))
-			return -ENOMEM;
-
-		if (add_hotplug_env_var(envp, num_envp, &i,
-					buffer, buffer_size, &length,
-					"MODALIAS=usb:v%04Xp%04Xd%04Xdc%02Xdsc%02Xdp%02Xic%02Xisc%02Xip%02X",
-					le16_to_cpu(usb_dev->descriptor.idVendor),
-					le16_to_cpu(usb_dev->descriptor.idProduct),
-					le16_to_cpu(usb_dev->descriptor.bcdDevice),
-					usb_dev->descriptor.bDeviceClass,
-					usb_dev->descriptor.bDeviceSubClass,
-					usb_dev->descriptor.bDeviceProtocol,
-					alt->desc.bInterfaceClass,
-					alt->desc.bInterfaceSubClass,
-					alt->desc.bInterfaceProtocol))
-			return -ENOMEM;
- 	} else {
-		if (add_hotplug_env_var(envp, num_envp, &i,
-					buffer, buffer_size, &length,
-					"MODALIAS=usb:v%04Xp%04Xd%04Xdc%02Xdsc%02Xdp%02Xic*isc*ip*",
-					le16_to_cpu(usb_dev->descriptor.idVendor),
-					le16_to_cpu(usb_dev->descriptor.idProduct),
-					le16_to_cpu(usb_dev->descriptor.bcdDevice),
-					usb_dev->descriptor.bDeviceClass,
-					usb_dev->descriptor.bDeviceSubClass,
-					usb_dev->descriptor.bDeviceProtocol))
-			return -ENOMEM;
-	}
+	if (add_hotplug_env_var(envp, num_envp, &i,
+				buffer, buffer_size, &length,
+				"MODALIAS=usb:v%04Xp%04Xd%04Xdc%02Xdsc%02Xdp%02Xic%02Xisc%02Xip%02X",
+				le16_to_cpu(usb_dev->descriptor.idVendor),
+				le16_to_cpu(usb_dev->descriptor.idProduct),
+				le16_to_cpu(usb_dev->descriptor.bcdDevice),
+				usb_dev->descriptor.bDeviceClass,
+				usb_dev->descriptor.bDeviceSubClass,
+				usb_dev->descriptor.bDeviceProtocol,
+				alt->desc.bInterfaceClass,
+				alt->desc.bInterfaceSubClass,
+				alt->desc.bInterfaceProtocol))
+		return -ENOMEM;
 
 	envp[i] = NULL;
 
@@ -725,6 +707,10 @@ usb_alloc_dev(struct usb_device *parent, struct usb_bus *bus, unsigned port1)
 	if (unlikely (!parent)) {
 		dev->devpath [0] = '0';
 
+#ifdef USB_TO_NOTIFY_TIER
+		dev->tier = 1;	// for root hub
+#endif /* USB_TO_NOTIFY_TIER */
+
 		dev->dev.parent = bus->controller;
 		sprintf (&dev->dev.bus_id[0], "usb%d", bus->busnum);
 	} else {
@@ -735,6 +721,10 @@ usb_alloc_dev(struct usb_device *parent, struct usb_bus *bus, unsigned port1)
 		else
 			snprintf (dev->devpath, sizeof dev->devpath,
 				"%s.%d", parent->devpath, port1);
+
+#ifdef USB_TO_NOTIFY_TIER
+		dev->tier = parent->tier + 1;
+#endif /* USB_TO_NOTIFY_TIER */
 
 		dev->dev.parent = &parent->dev;
 		sprintf (&dev->dev.bus_id[0], "%d-%s",
@@ -1306,7 +1296,10 @@ int usb_buffer_map_sg (struct usb_device *dev, unsigned pipe,
 			|| usb_pipecontrol (pipe)
 			|| !(bus = dev->bus)
 			|| !(controller = bus->controller)
-			|| !controller->dma_mask)
+#ifndef CONFIG_REALTEK_VENUS_USB	//cfyeh+ 2005/11/07
+			|| !controller->dma_mask
+#endif /* CONFIG_REALTEK_VENUS_USB */	//cfyeh+ 2005/11/07
+			)
 		return -1;
 
 	// FIXME generic api broken like pci, can't report errors
@@ -1366,7 +1359,10 @@ void usb_buffer_unmap_sg (struct usb_device *dev, unsigned pipe,
 	if (!dev
 			|| !(bus = dev->bus)
 			|| !(controller = bus->controller)
-			|| !controller->dma_mask)
+#ifndef CONFIG_REALTEK_VENUS_USB        //cfyeh+ 2005/11/07
+			|| !controller->dma_mask
+#endif /* CONFIG_REALTEK_VENUS_USB */   //cfyeh+ 2005/11/07
+			)
 		return;
 
 	dma_unmap_sg (controller, sg, n_hw_ents,
@@ -1516,6 +1512,9 @@ module_exit(usb_exit);
  * These symbols are exported for device (or host controller)
  * driver modules to use.
  */
+
+EXPORT_SYMBOL(usb_get_intf);
+EXPORT_SYMBOL(usb_put_intf);
 
 EXPORT_SYMBOL(usb_register);
 EXPORT_SYMBOL(usb_deregister);

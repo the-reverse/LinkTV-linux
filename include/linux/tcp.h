@@ -53,7 +53,7 @@ struct tcphdr {
 	__u16	window;
 	__u16	check;
 	__u16	urg_ptr;
-};
+} __attribute__ ((packed));
 
 
 enum {
@@ -97,7 +97,7 @@ enum {
 union tcp_word_hdr { 
 	struct tcphdr hdr;
 	__u32 		  words[5];
-}; 
+} __attribute__ ((packed));
 
 #define tcp_flag_word(tp) ( ((union tcp_word_hdr *)(tp))->words [3]) 
 
@@ -228,7 +228,7 @@ struct tcp_options_received {
 	__u8	num_sacks;	/* Number of SACK blocks		*/
 	__u16	user_mss;  	/* mss requested by user in ioctl */
 	__u16	mss_clamp;	/* Maximal mss, negotiated at connection setup */
-};
+} __attribute__ ((packed));
 
 struct tcp_sock {
 	/* inet_sock has to be the first member of tcp_sock */
@@ -436,7 +436,7 @@ struct tcp_sock {
 		__u32	last_cwnd;	/* the last snd_cwnd */
 		__u32   last_stamp;     /* time when updated last_cwnd */
 	} bictcp;
-};
+} __attribute__ ((packed));
 
 static inline struct tcp_sock *tcp_sk(const struct sock *sk)
 {

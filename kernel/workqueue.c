@@ -210,6 +210,9 @@ static int worker_thread(void *__cwq)
 			__set_current_state(TASK_RUNNING);
 		remove_wait_queue(&cwq->more_work, &wait);
 
+		if (current->flags & PF_FREEZE)
+			refrigerator(PF_FREEZE);
+
 		if (!list_empty(&cwq->worklist))
 			run_workqueue(cwq);
 		set_current_state(TASK_INTERRUPTIBLE);
@@ -272,6 +275,30 @@ void fastcall flush_workqueue(struct workqueue_struct *wq)
 		lock_cpu_hotplug();
 		for_each_online_cpu(cpu)
 			flush_cpu_workqueue(wq->cpu_wq + cpu);
+		unlock_cpu_hotplug();
+	}
+}
+
+void fastcall freeze_worker_thread(struct workqueue_struct *wq)
+{
+	struct cpu_workqueue_struct *cwq;
+
+	if (is_single_threaded(wq)) {
+		/* Always use cpu 0's area. */
+		cwq = wq->cpu_wq + 0;
+		if (cwq->thread->flags & PF_NOFREEZE)
+			cwq->thread->flags &= ~PF_NOFREEZE;
+		cwq->thread->flags |= PF_FREEZE;
+	} else {
+		int cpu;
+
+		lock_cpu_hotplug();
+		for_each_online_cpu(cpu) {
+			cwq = wq->cpu_wq + cpu;
+			if (cwq->thread->flags & PF_NOFREEZE)
+				cwq->thread->flags &= ~PF_NOFREEZE;
+			cwq->thread->flags |= PF_FREEZE;
+		}
 		unlock_cpu_hotplug();
 	}
 }
